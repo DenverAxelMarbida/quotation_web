@@ -1,0 +1,7 @@
+# Quotation-to-Excel Automation System - backend development dependencies.
+# Installed on top of requirements.txt.
+-r requirements.txt
+
+pytest==9.1.1
+httpx==0.28.1
+ruff==0.16.9

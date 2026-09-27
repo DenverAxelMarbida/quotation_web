@@ -1,0 +1,9 @@
+# Quotation-to-Excel Automation System - backend runtime dependencies.
+# Intentionally small and portable: no database, no auth, no AI/LLM SDK,
+# no OneDrive SDK. PDF parsing and Excel libraries are added in the phases
+# that actually need them (see AGENTS.md sections 16 and 20.7).
+fastapi==0.141.1
+uvicorn[standard]==0.54.0
+pydantic==2.13.5
+python-multipart==0.0.32
+python-dotenv==1.2.3
