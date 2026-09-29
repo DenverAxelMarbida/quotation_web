@@ -628,10 +628,7 @@ def _lines_for(description: str) -> int:
     """The number of visual lines the generator expects this description to need."""
     width = int(OpenpyxlWorkbookGenerator.COLUMN_WIDTHS["Product Description"])
     chars_per_line = max(10, width - 2)
-    return sum(
-        max(1, math.ceil(len(part) / chars_per_line))
-        for part in description.split("\n")
-    )
+    return sum(max(1, math.ceil(len(part) / chars_per_line)) for part in description.split("\n"))
 
 
 def _sheet_for(description: str):
@@ -698,9 +695,7 @@ def test_embedded_newlines_are_preserved_verbatim_and_still_wrap():
     assert cell.value == description
     assert cell.value.count("\n") == 2
     assert cell.alignment.wrap_text is True
-    assert sheet.row_dimensions[2].height == (
-        OpenpyxlWorkbookGenerator.LINE_HEIGHT * 3
-    )
+    assert sheet.row_dimensions[2].height == (OpenpyxlWorkbookGenerator.LINE_HEIGHT * 3)
 
 
 def test_very_long_description_row_height_is_not_capped():
@@ -715,9 +710,7 @@ def test_very_long_description_row_height_is_not_capped():
 
     sheet = _sheet_for(long_desc)
     assert sheet.cell(row=2, column=4).value == long_desc
-    assert sheet.row_dimensions[2].height == (
-        OpenpyxlWorkbookGenerator.LINE_HEIGHT * lines
-    )
+    assert sheet.row_dimensions[2].height == (OpenpyxlWorkbookGenerator.LINE_HEIGHT * lines)
     assert sheet.row_dimensions[2].height > OpenpyxlWorkbookGenerator.LINE_HEIGHT * 8
 
 
