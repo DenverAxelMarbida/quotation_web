@@ -9,9 +9,8 @@ Verifies that the generator:
 - Uses correct sheet name and column order
 """
 
-from io import BytesIO
-
 import math
+from io import BytesIO
 
 import pytest
 from openpyxl import load_workbook
