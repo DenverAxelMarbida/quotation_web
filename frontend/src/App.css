@@ -1,60 +1,636 @@
+/*
+ * Wide enough that a session or line-item table shows its Description column
+ * and its Action column without wrapping either, which is how this application
+ * is read. Capped rather than full width, so on a 1920px monitor it stays a
+ * centred working area instead of an edge-to-edge dashboard. The horizontal
+ * padding is unchanged.
+ */
 .page {
-  max-width: 44rem;
+  max-width: 72rem;
   margin: 0 auto;
   padding: 2.5rem 1.25rem 4rem;
 }
 
 h1 {
   margin: 0 0 0.5rem;
-  font-size: 1.75rem;
+  font-size: 1.7rem;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  margin: 0 0 0.375rem;
+  font-size: 1.2rem;
+  line-height: 1.3;
+}
+
+h3 {
+  margin: 0 0 0.75rem;
+  font-size: 1.05rem;
+  line-height: 1.3;
 }
 
 .lead {
-  margin: 0 0 2rem;
-  color: var(--text);
+  margin: 0 0 1.5rem;
+  color: var(--color-muted-foreground);
 }
+
+/*
+ * A wider page must not turn a sentence into a 1100px line. Reading prose is
+ * capped to a comfortable measure; the tables below it are free to use the full
+ * width, which is the reason the page was widened.
+ */
+.lead,
+.card > p,
+.notice-detail,
+.clear-confirm p {
+  max-width: 44rem;
+}
+
+/* Surfaces */
 
 .card {
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
   padding: 1.25rem;
   margin-bottom: 1.25rem;
-}
-
-.card h2 {
-  margin: 0 0 0.75rem;
-  font-size: 1.1rem;
-}
-
-.card ol {
-  margin: 0 0 0.75rem;
-  padding-left: 1.25rem;
+  box-shadow: var(--shadow-card);
 }
 
 .muted {
-  color: var(--text);
+  color: var(--color-muted-foreground);
   font-size: 0.9rem;
 }
 
+/*
+ * The quotation header card holds three short values. Stacked full width in a
+ * wide card they left most of it empty, so they sit in as many equal columns as
+ * fit: three on a desktop, two on a tablet, one on a phone.
+ *
+ * The upload form is deliberately not matched: it holds a single file field, so
+ * it keeps its single-column shape.
+ */
+.card:has(> .field input[type='text']) {
+  display: grid;
+  /* min() keeps the track from ever demanding more than the card can give, so
+     a narrow window cannot force the page to scroll sideways. */
+  grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
+  gap: 0 1.5rem;
+  align-items: start;
+}
+
+.card:has(> .field input[type='text']) > h3 {
+  grid-column: 1 / -1;
+}
+
+/* Buttons */
+
 button {
   font: inherit;
-  padding: 0.6rem 1.1rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--accent-bg);
-  color: inherit;
+  min-height: 44px;
+  padding: 0.55rem 1.1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-foreground);
   cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+button:hover:not(:disabled) {
+  background: var(--color-muted);
+}
+
+button:active:not(:disabled) {
+  background: var(--color-border);
 }
 
 button:disabled {
-  opacity: 0.6;
-  cursor: default;
+  cursor: not-allowed;
+  border-color: var(--color-border);
+  background: var(--color-muted);
+  color: var(--color-muted-foreground);
 }
 
-.ok {
-  color: #1a7f37;
+button.primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-on-primary);
+  font-weight: 600;
 }
 
-.error {
-  color: #b42318;
+button.primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+button.primary:active:not(:disabled) {
+  background: #1e3a8a;
+  border-color: #1e3a8a;
+}
+
+button.primary:disabled {
+  background: var(--color-muted);
+  border-color: var(--color-border);
+  color: var(--color-muted-foreground);
+}
+
+button.secondary {
+  background: var(--color-surface);
+  border-color: var(--color-border);
+  color: var(--color-foreground);
+  font-weight: 500;
+}
+
+button.secondary:hover:not(:disabled) {
+  background: var(--color-muted);
+}
+
+button.danger {
+  background: var(--color-surface);
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
+button.danger:hover:not(:disabled) {
+  background: var(--color-danger-bg);
+}
+
+button.link-button {
+  min-height: 44px;
+  padding: 0.4rem 0.6rem;
+  border-color: transparent;
+  background: none;
+  color: var(--color-primary);
+  font-weight: 500;
+  text-decoration: underline;
+}
+
+button.link-button:hover:not(:disabled) {
+  background: var(--color-muted);
+}
+
+/* Delete removes a line for good, so it reads as destructive without shouting. */
+button.link-button--danger {
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
+button.link-button--danger:hover:not(:disabled) {
+  background: var(--color-danger-bg);
+}
+
+.button-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.25rem;
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Forms */
+
+.field {
+  margin-bottom: 1rem;
+}
+
+.field label,
+.field-label {
+  display: block;
+  margin-bottom: 0.375rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+/*
+ * The sequence number is decided by the app, so it is shown, not typed. It is
+ * styled as a value rather than a field, so nothing invites it to be edited.
+ */
+.sequence-value {
+  display: inline-block;
+  padding: 0.4rem 0.1rem 0.4rem 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-foreground);
+}
+
+.field input,
+.field textarea {
+  font: inherit;
+  width: 100%;
+  min-height: 44px;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-foreground);
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.field input:disabled,
+.field textarea:disabled {
+  background: var(--color-muted);
+  color: var(--color-muted-foreground);
+  cursor: not-allowed;
+}
+
+.chosen-file {
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+  color: var(--color-muted-foreground);
+  word-break: break-all;
+}
+
+/* Review flags: marked by wording, not only by colour. */
+
+.note {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+}
+
+.note-tag {
+  display: inline-block;
+  margin-right: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--color-muted-foreground);
+  border-radius: 4px;
+  color: var(--color-muted-foreground);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  font-size: 0.7rem;
+}
+
+.note-tag--neutral {
+  border-color: var(--color-muted-foreground);
+  color: var(--color-muted-foreground);
+}
+
+.note-tag--danger {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.note-tag--success {
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+[aria-invalid='true'] {
+  border-color: var(--color-danger);
+  background: var(--color-danger-bg);
+}
+
+/* Notices */
+
+.notice {
+  margin: 0 0 1.25rem;
+  padding: 0.75rem 1rem;
+  border-left: 4px solid var(--color-muted-foreground);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--color-muted);
+}
+
+.notice--success {
+  border-left-color: var(--color-success);
+  background: var(--color-success-bg);
+}
+
+.notice--info {
+  border-left-color: var(--color-info);
+  background: var(--color-info-bg);
+}
+
+.notice--warning {
+  border-left-color: var(--color-warning);
+  background: var(--color-warning-bg);
+}
+
+.notice--danger {
+  border-left-color: var(--color-danger);
+  background: var(--color-danger-bg);
+}
+
+.notice-detail {
+  margin: 0.35rem 0 0;
+  font-size: 0.95rem;
+}
+
+.section-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.section-heading h3,
+.section-heading .muted {
+  margin: 0;
+}
+
+/*
+ * The review action bar.
+ *
+ * These are the only Add to Workbook and Cancel controls on the screen, so
+ * there is never a second copy that can fall out of step with the first. It
+ * stays inside the review card it belongs to, and the negative margins let it
+ * sit on the card's own edges so it reads as part of the card, not a floating
+ * overlay.
+ */
+.review-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin: 0.25rem -1.25rem -1.25rem;
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid var(--color-border);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: 0 -2px 6px rgba(15, 23, 42, 0.08);
+}
+
+.review-actions-status {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--color-muted-foreground);
+}
+
+.review-actions-sequence {
+  color: var(--color-foreground);
+}
+
+.review-actions .button-group {
+  margin-top: 0;
+}
+
+/* Destructive confirmation. The question is in the open, not in a browser dialog. */
+
+.clear-confirm {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--color-border);
+  border-left: 4px solid var(--color-danger);
+  border-radius: var(--radius-sm);
+  background: var(--color-danger-bg);
+}
+
+.clear-confirm h3 {
+  margin-top: 0;
+}
+
+.clear-confirm .button-group {
+  margin-top: 0.75rem;
+}
+
+.warning-list {
+  margin: 0 0 1.25rem;
+  padding-left: 1.25rem;
+  font-size: 0.9rem;
+  color: var(--color-warning);
+}
+
+/* Line items */
+
+.table-scroll {
+  overflow-x: auto;
+  margin-bottom: 1rem;
+}
+
+.table-scroll table {
+  min-width: 32rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+th,
+td {
+  border: 1px solid var(--color-border);
+  padding: 0.5rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  background: var(--color-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+tbody tr:nth-child(even) {
+  background: var(--color-zebra);
+}
+
+tbody tr:hover {
+  background: var(--color-muted);
+}
+
+th.align-right,
+td.align-right {
+  text-align: right;
+}
+
+th.align-center,
+td.align-center {
+  text-align: center;
+}
+
+/* The cell decides where the data belongs, so the field inside follows it. */
+td.align-right input {
+  text-align: right;
+}
+
+td.align-center input {
+  text-align: center;
+}
+
+td input,
+td textarea {
+  font: inherit;
+  width: 100%;
+  min-height: 44px;
+  padding: 0.45rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-foreground);
+}
+
+td input:disabled,
+td textarea:disabled {
+  background: var(--color-muted);
+  color: var(--color-muted-foreground);
+}
+
+td textarea {
+  resize: vertical;
+}
+
+td input[type='number'] {
+  max-width: 7rem;
+}
+
+td input:not([type='number']) {
+  max-width: 9rem;
+}
+
+.delete-confirm {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+}
+
+/* Status and errors */
+
+.processing {
+  margin: 0 0 1rem;
+  font-weight: 600;
+}
+
+.alert {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  border-left: 4px solid var(--color-danger);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--color-danger-bg);
+}
+
+.alert--danger {
+  border-left-color: var(--color-danger);
+  background: var(--color-danger-bg);
+}
+
+.alert-message {
+  margin: 0;
+  font-weight: 500;
+}
+
+.alert-detail {
+  margin: 0.35rem 0 0;
+  font-size: 0.9rem;
+  color: var(--color-muted-foreground);
+}
+
+/* Intentional empty state for a table with no rows. */
+
+.empty-state {
+  margin: 0 0 1rem;
+  padding: 1rem;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-muted-foreground);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+/* Available to a screen reader, not to the eye. */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Session quotations. Long ERP references must not stretch the page. */
+
+.session {
+  margin-top: 1.5rem;
+}
+
+.table-scroll .session-table {
+  min-width: 40rem;
+}
+
+.session-table td,
+.session-table th {
+  word-break: break-word;
+}
+
+.session-table td:last-child,
+.session-table th:last-child {
+  width: 1%;
+  white-space: nowrap;
+}
+
+/* Responsive */
+
+@media (max-width: 640px) {
+  .page {
+    padding: 1.5rem 0.875rem 3rem;
+  }
+
+  h1 {
+    font-size: 1.4rem;
+  }
+
+  .lead {
+    margin-bottom: 1rem;
+    font-size: 0.95rem;
+  }
+
+  .card {
+    padding: 1rem;
+  }
+
+  .button-group {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .button-group button {
+    width: 100%;
+  }
+
+  .review-actions {
+    flex-direction: column;
+    align-items: stretch;
+    margin: 0.25rem -1rem -1rem;
+    padding: 0.75rem 1rem;
+  }
+
+  .review-actions .button-group {
+    width: 100%;
+  }
+
+  .table-scroll .session-table {
+    min-width: 34rem;
+  }
+}
+
+@media (min-width: 641px) and (max-width: 1024px) {
+  .table-scroll table {
+    min-width: 36rem;
+  }
 }

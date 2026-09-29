@@ -1,13 +1,51 @@
 :root {
-  --text: #1f2328;
-  --bg: #ffffff;
-  --border: #d0d7de;
-  --accent-bg: #f6f8fa;
+  /* Brand */
+  --color-primary: #1e40af;
+  --color-primary-hover: #1d4ed8;
+  --color-on-primary: #ffffff;
+
+  /* Surface: separated far enough to read as distinct without looking tinted */
+  --color-page: #e8edf4;
+  --color-surface: #ffffff;
+  --color-foreground: #0f172a;
+  --color-muted: #dde5ee;
+  --color-muted-foreground: #475569;
+  --color-border: #c3cdd9;
+
+  /* Semantic: dark enough to stay legible as small text */
+  --color-success: #166534;
+  --color-success-bg: #dcfce7;
+  --color-warning: #92400e;
+  --color-warning-bg: #fef3c7;
+  --color-danger: #b91c1c;
+  --color-danger-bg: #fef2f2;
+  --color-info: #075985;
+  --color-info-bg: #e0f2fe;
+
+  /* Table banding */
+  --color-zebra: #f7f9fc;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+
+  /* Elevation */
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.1);
 
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  font-size: 16px;
   line-height: 1.5;
-  color: var(--text);
-  background: var(--bg);
+  color: var(--color-foreground);
+  background: var(--color-page);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -18,5 +56,5 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: var(--bg);
+  background: var(--color-page);
 }

@@ -176,6 +176,12 @@ NET PRICE
 TOTAL/AED
 ```
 
+The table is drawn with real ruled cell borders. Values must be read from their
+own ruled cell, never from the flattened text stream: in the flattened stream the
+table columns interleave, and the `DISCOUNT` column value is easily mistaken for
+the quantity. Specifically, each quantity below is the value inside the ruled
+`QTY` cell of that row.
+
 Known sample line items:
 
 ### SR# 1 / FF-04
@@ -190,7 +196,7 @@ Known sample line items:
 - Color to match the approved sample
 - Glue down method
 - Including wastage
-- Quantity: 30
+- Quantity: 34
 - Unit: m2
 
 ### SR# 2 / FF-05
@@ -206,7 +212,7 @@ Known sample line items:
 - Color to match the approved sample
 - Straight installation
 - Glue down method
-- Quantity: 55
+- Quantity: 88
 - Unit: m2
 
 ### SR# 3
@@ -214,6 +220,21 @@ Known sample line items:
 - Self-levelling up to 3mm
 - Quantity: 122
 - Unit: m2
+
+### Quantity correction (verified against the PDF)
+
+The SR#1 and SR#2 quantities above were previously recorded as `30` and `55`.
+Those are the values in the ruled `DISCOUNT` cells. The correct `QTY` cell values
+are `34` and `88`. The corrected figures are confirmed by the quotation's own
+arithmetic, which holds exactly for every row:
+
+- `PRICE/UNIT - DISCOUNT = NET PRICE` — 610.00-30.00=580.00, 650.00-55.00=595.00, 55.00-0.00=55.00
+- `QTY x NET PRICE = TOTAL/AED` — 34x580.00=19,720.00, 88x595.00=52,360.00, 122x55.00=6,710.00
+- the three `TOTAL/AED` values sum to 78,790.00, which equals the document's own
+  `Net Before VAT` 74,999.96 plus `Discount` 3,790.04
+
+The old figures satisfy none of these for SR#1 and SR#2. SR#3's `122` was always
+correct; it agreed with the old figures only because its `DISCOUNT` cell is 0.00.
 
 The PDF may also contain financial/administrative information such as discounts, VAT, totals, validity, payment terms, exclusions, and remarks. These are not currently required for the coworker-facing monitoring output unless explicitly requested.
 

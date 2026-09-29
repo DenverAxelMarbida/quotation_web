@@ -1,26 +1,1459 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
-import App from './App'
-import { apiBaseUrl } from './lib/api'
+/**
+ * The whole quotation workflow, driven through the screen a user sees.
+ *
+ * Only the API module is mocked, so these tests exercise the real components,
+ * the real draft reducer and the real error handling. The assertions describe
+ * what a person would see and do, not the shape of internal state.
+ */
 
-describe('App', () => {
-  it('shows the quotation workflow title and planned screens', () => {
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import App from './App'
+import { ApiError } from './api/client'
+import { generateConsolidatedExcel, generateExcel, parseQuotation } from './api/quotations'
+import type { QuotationPreview } from './types/quotation'
+
+vi.mock('./api/quotations', () => ({ 
+  parseQuotation: vi.fn(),
+  generateExcel: vi.fn(),
+  generateConsolidatedExcel: vi.fn(),
+}))
+
+const parse = vi.mocked(parseQuotation)
+const genExcel = vi.mocked(generateExcel)
+const genConsolidated = vi.mocked(generateConsolidatedExcel)
+
+const PROJECT_FLAG =
+  'This quotation does not print a project name. Please type it in.'
+const QUANTITY_FLAG = 'Line 2: the quantity was not readable. Please type it in.'
+
+/** A quotation whose project name was genuinely absent from the PDF. */
+function alpagoPreview(): QuotationPreview {
+  return {
+    quotation: {
+      quotation_number: 'QDXB/24/012489/Rev1',
+      client_name: 'ALPAGO DESIGN AND BUILD CONTRACTING L.L.C S.O.C',
+      project_name: null,
+      items: [
+        { sr: 1, description: 'Vinyl flooring sheet 2mm', quantity: 200, unit: 'm2' },
+        { sr: 2, description: 'Self-levelling compound', quantity: 200, unit: 'm2' },
+      ],
+    },
+    review: [{ field: 'project_name', reason: 'missing', message: PROJECT_FLAG }],
+    source: { filename: 'quotation3_ALPAGO - 012489REV1.pdf', page_count: 2, warnings: [] },
+  }
+}
+
+/** A quotation that read cleanly except for one unreadable quantity. */
+function referencePreview(quotationNumber = 'QDXB/25/014094/Rev1'): QuotationPreview {
+  return {
+    quotation: {
+      quotation_number: quotationNumber,
+      client_name: 'ALPAGO DESIGN AND BUILD CONTRACTING L.L.C S.O.C',
+      project_name: 'MBRC 466',
+      items: [
+        { sr: 1, description: 'Engineered Oak Flooring 15/4 x 120 x 600mm', quantity: 34, unit: 'm2' },
+        { sr: 2, description: 'Engineered Oak Flooring 16/4 x 220 x RLmm', quantity: null, unit: 'm2' },
+        { sr: 3, description: 'Self-levelling up to 3mm', quantity: 122, unit: 'm2' },
+      ],
+    },
+    review: [{ field: 'items[1].quantity', reason: 'missing', message: QUANTITY_FLAG }],
+    source: {
+      filename: 'SAMPLE_VRP_Quotation - 2026-07-21T155726.357.pdf',
+      page_count: 2,
+      warnings: [],
+    },
+  }
+}
+
+/** A quotation whose ERP quotation number was absent from the PDF. */
+function noNumberPreview(): QuotationPreview {
+  const preview = referencePreview()
+  preview.quotation.quotation_number = null
+  return preview
+}
+
+let fileCounter = 0
+
+/**
+ * A PDF file. Each call gets distinct content so two uploads are treated as two
+ * different documents; pass `content` explicitly to model the very same file.
+ */
+function pdfFile(name = 'quote.pdf', content?: string): File {
+  return new File([content ?? `${name}::${fileCounter++}`], name, {
+    type: 'application/pdf',
+  })
+}
+
+/** Selects a file and asks for it to be read. */
+function chooseAndRead(file: File) {
+  fireEvent.change(screen.getByLabelText('Quotation PDF file'), { target: { files: [file] } })
+  fireEvent.click(screen.getByRole('button', { name: 'Read quotation' }))
+}
+
+function reviewScreen() {
+  // The heading text changes based on whether we're in sequence input mode
+  // Use the h2 (main heading) to avoid duplicate h3 matches
+  return screen.findByRole('heading', { 
+    name: /check the quotation details|assign sequence number/i,
+    level: 2
+  })
+}
+
+/** Waits for the automatic sequence step. */
+function sequenceScreen() {
+  return screen.findByRole('heading', { name: /assign sequence number/i, level: 2 })
+}
+
+beforeEach(() => {
+  parse.mockReset()
+  genExcel.mockReset()
+  genConsolidated.mockReset()
+  // By default, generateExcel returns a mock blob
+  genExcel.mockResolvedValue(new Blob(['mock excel data'], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
+  genConsolidated.mockResolvedValue(new Blob(['mock excel data'], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
+})
+
+describe('upload screen', () => {
+  it('offers a PDF upload and an action to read it', () => {
     render(<App />)
 
-    expect(screen.getByRole('heading', { name: 'Quotation to Excel' })).toBeInTheDocument()
-    expect(screen.getByText('Upload quotation PDF')).toBeInTheDocument()
-    expect(screen.getByText('Confirm and download Excel')).toBeInTheDocument()
+    expect(screen.getByLabelText('Quotation PDF file')).toHaveAttribute('accept', 'application/pdf,.pdf')
+    expect(screen.getByRole('button', { name: 'Read quotation' })).toBeInTheDocument()
+  })
+
+  it('shows the name of the file that was selected', () => {
+    render(<App />)
+
+    fireEvent.change(screen.getByLabelText('Quotation PDF file'), {
+      target: { files: [pdfFile('quotation2_Tee Vee - 004050Rev2.pdf')] },
+    })
+
+    expect(screen.getByText('quotation2_Tee Vee - 004050Rev2.pdf')).toBeInTheDocument()
+  })
+
+  it('rejects a file that is not a PDF without calling the backend', async () => {
+    render(<App />)
+
+    chooseAndRead(new File(['hello'], 'notes.txt', { type: 'text/plain' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/pdf/i)
+    expect(parse).not.toHaveBeenCalled()
+  })
+
+  it('shows a clear processing state and refuses a second submission', async () => {
+    let release: (value: QuotationPreview) => void = () => {}
+    parse.mockImplementationOnce(
+      () => new Promise<QuotationPreview>((resolve) => (release = resolve)),
+    )
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    expect(await screen.findByRole('status')).toHaveTextContent(/reading the quotation/i)
+
+    const button = screen.getByRole('button', { name: 'Read quotation' })
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+
+    await waitFor(() => expect(parse).toHaveBeenCalledTimes(1))
+    release(referencePreview())
+    await reviewScreen()
+  })
+
+  it('shows the backend message when the file cannot be read', async () => {
+    parse.mockRejectedValueOnce(
+      new ApiError(
+        'This file could not be read as a quotation PDF.',
+        415,
+        'UnsupportedDocumentError',
+        'Upload the original quotation PDF exported from the ERP.',
+      ),
+    )
+    render(<App />)
+
+    chooseAndRead(pdfFile('damaged.pdf'))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('This file could not be read as a quotation PDF.')
+    expect(alert).toHaveTextContent('Upload the original quotation PDF exported from the ERP.')
+    expect(screen.queryByLabelText('Client name')).not.toBeInTheDocument()
+  })
+
+  it('does not leave an earlier quotation on screen after a later failure', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    const { unmount } = render(<App />)
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    unmount()
+
+    parse.mockRejectedValueOnce(new ApiError('No text could be read from this PDF.', 422, 'E', null))
+    render(<App />)
+
+    chooseAndRead(pdfFile('scanned.pdf'))
+
+    await screen.findByRole('alert')
+    expect(screen.queryByLabelText('Client name')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Read quotation' })).toBeEnabled()
   })
 })
 
-describe('apiBaseUrl', () => {
-  it('falls back to the local backend when no env value is set', () => {
-    expect(apiBaseUrl()).toBe('http://localhost:8000')
+describe('review screen', () => {
+  it('shows the quotation details that were read from the PDF', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    expect(screen.getByLabelText('Quotation number')).toHaveValue('QDXB/25/014094/Rev1')
+    expect(screen.getByLabelText('Client name')).toHaveValue(
+      'ALPAGO DESIGN AND BUILD CONTRACTING L.L.C S.O.C',
+    )
+    expect(screen.getByLabelText('Project name')).toHaveValue('MBRC 466')
   })
 
-  it('strips trailing slashes from the configured base URL', () => {
-    vi.stubEnv('VITE_API_BASE_URL', 'https://api.example.com///')
-    expect(apiBaseUrl()).toBe('https://api.example.com')
-    vi.unstubAllEnvs()
+  it('shows every line item as its own row', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    expect(screen.getByLabelText('Line 1 description')).toHaveValue(
+      'Engineered Oak Flooring 15/4 x 120 x 600mm',
+    )
+    expect(screen.getByLabelText('Line 1 quantity')).toHaveValue(34)
+    expect(screen.getByLabelText('Line 1 unit')).toHaveValue('m2')
+    expect(screen.getByLabelText('Line 3 description')).toHaveValue('Self-levelling up to 3mm')
+    expect(screen.getByLabelText('Line 3 quantity')).toHaveValue(122)
+  })
+
+  it('marks the fields the parser could not read', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    const quantity = screen.getByLabelText('Line 2 quantity')
+    expect(quantity).toHaveAccessibleDescription(QUANTITY_FLAG)
+    expect(quantity).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getAllByText('Needs review').length).toBeGreaterThan(0)
+  })
+
+  it('summarises how many fields are still waiting to be checked', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    expect(screen.getByText('Review required')).toBeInTheDocument()
+  })
+
+  it('lets a project name that the PDF never printed be typed in', async () => {
+    parse.mockResolvedValueOnce(alpagoPreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    const projectName = screen.getByLabelText('Project name')
+    expect(projectName).toHaveValue('')
+    expect(projectName).toHaveAccessibleDescription(PROJECT_FLAG)
+
+    fireEvent.change(projectName, { target: { value: 'Marina Bay Tower' } })
+
+    expect(screen.getByLabelText('Project name')).toHaveValue('Marina Bay Tower')
+    expect(screen.queryByText(PROJECT_FLAG)).not.toBeInTheDocument()
+    expect(screen.queryByText('Review required')).not.toBeInTheDocument()
+  })
+
+  it('lets a value that read correctly be corrected', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    const clientName = screen.getByLabelText('Client name')
+    fireEvent.change(clientName, { target: { value: 'Alpago Design LLC' } })
+
+    expect(screen.getByLabelText('Client name')).toHaveValue('Alpago Design LLC')
+    // The unrelated flag must survive: correcting one field is not a review pass.
+    expect(screen.getByText(QUANTITY_FLAG)).toBeInTheDocument()
+  })
+
+  it('keeps an unreadable quantity empty rather than guessing a number', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    fireEvent.change(screen.getByLabelText('Line 2 quantity'), { target: { value: 'not a number' } })
+
+    expect(screen.getByLabelText('Line 2 quantity')).toHaveValue(null)
+  })
+
+  it('still marks a quantity that is left empty', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    const quantity = screen.getByLabelText('Line 2 quantity')
+    expect(quantity).toHaveAccessibleDescription(QUANTITY_FLAG)
+
+    fireEvent.change(quantity, { target: { value: '' } })
+
+    // The person emptied the box. That supplies nothing, so the field must keep
+    // saying it needs review rather than going quietly blank.
+    expect(screen.getByLabelText('Line 2 quantity')).toHaveAccessibleDescription(QUANTITY_FLAG)
+    expect(screen.getByText('Review required')).toBeInTheDocument()
+  })
+
+  it('still marks a project name that is left empty', async () => {
+    parse.mockResolvedValueOnce(alpagoPreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: '   ' } })
+
+    expect(screen.getByLabelText('Project name')).toHaveValue('')
+    expect(screen.getByLabelText('Project name')).toHaveAccessibleDescription(PROJECT_FLAG)
+  })
+
+  it('brings a flag back when a typed project name is withdrawn', async () => {
+    parse.mockResolvedValueOnce(alpagoPreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    const projectName = screen.getByLabelText('Project name')
+    fireEvent.change(projectName, { target: { value: 'Marina Bay Tower' } })
+    expect(screen.queryByText(PROJECT_FLAG)).not.toBeInTheDocument()
+    expect(screen.getByText('Ready for review')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: '' } })
+
+    // The field is blank again, so the form must stop claiming it is clean.
+    expect(screen.getByLabelText('Project name')).toHaveAccessibleDescription(PROJECT_FLAG)
+    expect(screen.getByText('Review required')).toBeInTheDocument()
+    expect(screen.queryByText('Ready for review')).not.toBeInTheDocument()
+  })
+
+  it('adds a blank line item that can be filled in', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add line item' }))
+
+    expect(screen.getByLabelText('Line 4 description')).toHaveValue('')
+    expect(screen.getByLabelText('Line 4 quantity')).toHaveValue(null)
+  })
+
+  it('asks before deleting a line item', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete line 1' }))
+
+    expect(screen.getByLabelText('Line 1 description')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Confirm delete line 1' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete line 1' }))
+
+    expect(screen.getAllByLabelText(/^Line \d+ description$/)).toHaveLength(2)
+    expect(screen.getByLabelText('Line 1 description')).toHaveValue(
+      'Engineered Oak Flooring 16/4 x 220 x RLmm',
+    )
+    expect(screen.getByLabelText('Line 2 description')).toHaveValue('Self-levelling up to 3mm')
+  })
+
+  it('moves a review flag onto the right row when an earlier item is deleted', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    expect(screen.getByLabelText('Line 2 quantity')).toHaveAccessibleDescription(QUANTITY_FLAG)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete line 1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete line 1' }))
+
+    // The flagged row is now the first row, and the flag followed the data.
+    const firstRow = screen.getByLabelText('Line 1 quantity').closest('tr')
+    expect(firstRow).not.toBeNull()
+    expect(within(firstRow as HTMLElement).getByDisplayValue(/16\/4 x 220/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Line 1 quantity')).toHaveAccessibleDescription(QUANTITY_FLAG)
+    expect(screen.getByLabelText('Line 2 quantity')).not.toHaveAttribute('aria-invalid')
+  })
+
+  it('keeps the fields it is not allowed to infer out of the form', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    for (const forbidden of ['Sequence number', 'Installation schedule', 'Start date', 'Status']) {
+      expect(screen.queryByText(forbidden)).not.toBeInTheDocument()
+    }
+  })
+})
+
+describe('confirming and adding to workbook', () => {
+  it('confirms a quotation and moves to sequence number input', async () => {
+    parse.mockResolvedValueOnce(alpagoPreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    // A quotation with no project name must still be finishable, so the button
+    // is offered with a notice rather than withheld.
+    expect(screen.getByRole('button', { name: 'Confirm quotation' })).toBeEnabled()
+    expect(screen.getByText(/you can confirm with fields still marked/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+
+    // Should move to automatic sequence assignment screen
+    expect(await screen.findByRole('heading', { name: /assign sequence number/i, level: 2 })).toBeInTheDocument()
+    expect(screen.getByLabelText('Sequence Number')).toBeInTheDocument()
+  })
+
+  it('adds the quotation to the workbook with its automatic sequence number', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+
+    // The next number is shown ready to use and can be added straight away.
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+
+    // Should return to upload screen with the quotation count
+    await screen.findByLabelText('Quotation PDF file')
+    expect(screen.getByText(/1 quotation/)).toBeInTheDocument()
+  })
+
+  it('offers the first sequence number automatically without typing', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+
+    // 001 is offered, and no manual input is required to proceed.
+    expect(screen.getByLabelText('Sequence Number')).toHaveTextContent('001')
+    expect(screen.getByRole('button', { name: 'Add to Workbook' })).toBeEnabled()
+  })
+
+  it('keeps the quotation in the session after adding', async () => {
+    parse.mockResolvedValueOnce(alpagoPreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+
+    // Session feedback on the upload screen.
+    await screen.findByLabelText('Quotation PDF file')
+    expect(screen.getByText(/1 quotation/)).toBeInTheDocument()
+    expect(screen.getByText(/2 line item/)).toBeInTheDocument()
+
+    // The sequence number is stored as a zero-padded string.
+    genConsolidated.mockResolvedValueOnce(new Blob(['mock']))
+    fireEvent.click(screen.getByRole('button', { name: /generate consolidated workbook/i }))
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+    expect(genConsolidated.mock.calls[0][0].quotations[0].sequence_number).toBe('001')
+  })
+
+  it('going back to review keeps the quotation editable and adds nothing yet', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Review' }))
+
+    // Back on the review screen, still editable, and nothing was added.
+    await screen.findByRole('heading', { name: 'Check the quotation details', level: 2 })
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'MBRC 466' } })
+
+    // No session summary yet, because no quotation has been confirmed.
+    expect(screen.queryByText(/1 quotation/)).not.toBeInTheDocument()
+  })
+
+  it('editing a later quotation does not change an already confirmed one', async () => {
+    // First quotation is confirmed and must survive untouched.
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    // Second quotation is edited after the first was confirmed.
+    parse.mockResolvedValueOnce(alpagoPreview())
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    fireEvent.change(screen.getByLabelText('Client name'), { target: { value: 'CHANGED CLIENT' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    genConsolidated.mockResolvedValueOnce(new Blob(['mock']))
+    fireEvent.click(screen.getByRole('button', { name: /generate consolidated workbook/i }))
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+
+    const { quotations } = genConsolidated.mock.calls[0][0]
+    expect(quotations[0].sequence_number).toBe('001')
+    expect(quotations[0].quotation.client_name).toBe(
+      'ALPAGO DESIGN AND BUILD CONTRACTING L.L.C S.O.C',
+    )
+    expect(quotations[1].sequence_number).toBe('002')
+    expect(quotations[1].quotation.client_name).toBe('CHANGED CLIENT')
+  })
+
+  it('can add multiple quotations and generate consolidated workbook', async () => {
+    // First quotation
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+
+    // Should return to upload screen
+    await screen.findByLabelText('Quotation PDF file')
+    expect(screen.getByText(/1 quotation/)).toBeInTheDocument()
+
+    // Second quotation — same client, different ERP quotation number.
+    parse.mockResolvedValueOnce(referencePreview('QDXB/25/014095/Rev1'))
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+
+    // Should return to upload screen with 2 quotations
+    await screen.findByLabelText('Quotation PDF file')
+    expect(screen.getByText(/2 quotations/)).toBeInTheDocument()
+
+    // Generate consolidated workbook
+    genConsolidated.mockResolvedValueOnce(
+      new Blob(['mock excel data'], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      })
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /generate consolidated workbook/i }))
+
+    // The request must carry both quotations, in the order they were added, with
+    // the sequence numbers the app assigned.
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+    const request = genConsolidated.mock.calls[0][0]
+    expect(request.quotations.map((q) => q.sequence_number)).toEqual(['001', '002'])
+    expect(request.quotations.map((q) => q.quotation.items.length)).toEqual([3, 3])
+
+    // Should show completed screen
+    await screen.findByRole('heading', { name: /excel file generated/i })
+    // Check in the completed screen section - get the section containing the heading
+    const completedHeading = screen.getByRole('heading', { name: /excel file generated/i })
+    const completedSection = completedHeading.closest('section')
+    expect(completedSection).toBeInTheDocument()
+    // The text is split across elements, so just verify the section contains the info
+    expect(completedSection).toHaveTextContent(/2 quotation/)
+    expect(completedSection).toHaveTextContent(/6 line item/)
+  })
+
+  it('starts each upload with a clean copy of the previous draft', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'MBRC 466' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+
+    // Add to workbook with the automatic sequence number
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+
+    // Back to upload screen
+    await screen.findByLabelText('Quotation PDF file')
+
+    // Upload second quotation (a different ERP quotation number).
+    parse.mockResolvedValueOnce(referencePreview('QDXB/25/014095/Rev1'))
+    chooseAndRead(pdfFile())
+
+    await reviewScreen()
+    // The flag is back, which it would not be if the old draft had been reused.
+    await waitFor(() =>
+      expect(screen.getByText('Review required')).toBeInTheDocument(),
+    )
+    expect(screen.getByLabelText('Line 2 quantity')).toHaveAccessibleDescription(QUANTITY_FLAG)
+  })
+
+  it('can go back from sequence input to review', async () => {
+    parse.mockResolvedValueOnce(referencePreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+
+    // Should be in sequence assignment mode
+    await sequenceScreen()
+
+    // Click back to review
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Review' }))
+
+    // Should be back in review mode
+    expect(await screen.findByRole('heading', { name: /check the quotation details/i, level: 2 })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Confirm quotation' })).toBeInTheDocument()
+  })
+})
+
+describe('session continuation and reset', () => {
+  /** Drives one quotation all the way to confirmed with its automatic number. */
+  async function addQuotation(preview: QuotationPreview) {
+    parse.mockResolvedValueOnce(preview)
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+  }
+
+  /** Generates the consolidated workbook and waits for the completed screen. */
+  async function generateWorkbook() {
+    genConsolidated.mockResolvedValueOnce(new Blob(['mock']))
+    fireEvent.click(screen.getByRole('button', { name: /generate consolidated workbook/i }))
+    await screen.findByRole('heading', { name: /excel file generated/i })
+  }
+
+  it('keeps confirmed quotations when starting another quotation', async () => {
+    render(<App />)
+    await addQuotation(referencePreview())
+    expect(screen.getByText(/1 quotation/)).toBeInTheDocument()
+
+    await generateWorkbook()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start another quotation' }))
+
+    // Back at the upload/start stage, with the session still intact.
+    expect(await screen.findByLabelText('Quotation PDF file')).toBeInTheDocument()
+    expect(screen.getByText(/1 quotation/)).toBeInTheDocument()
+    expect(screen.getByText(/3 line item/)).toBeInTheDocument()
+    // The working draft is reset: no review form is left on screen.
+    expect(screen.queryByLabelText('Client name')).not.toBeInTheDocument()
+  })
+
+  it('adds a later quotation to the preserved session and sends them all', async () => {
+    render(<App />)
+    await addQuotation(referencePreview())
+
+    await generateWorkbook()
+    fireEvent.click(screen.getByRole('button', { name: 'Start another quotation' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    await addQuotation(alpagoPreview())
+    expect(screen.getByText(/2 quotations/)).toBeInTheDocument()
+
+    await generateWorkbook()
+
+    // The second request must carry both quotations, not only the new one.
+    expect(genConsolidated).toHaveBeenCalledTimes(2)
+    const request = genConsolidated.mock.calls[1][0]
+    expect(request.quotations.map((q) => q.sequence_number)).toEqual(['001', '002'])
+    expect(request.quotations.map((q) => q.quotation.items.length)).toEqual([3, 2])
+  })
+
+  it('clears the whole session when Clear session is confirmed', async () => {
+    render(<App />)
+    await addQuotation(referencePreview())
+    await generateWorkbook()
+
+    // One click asks the question; the second one accepts it.
+    fireEvent.click(screen.getByRole('button', { name: 'Clear session' }))
+    expect(screen.getByText(/clear all quotations\?/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear session' }))
+
+    // A completely fresh session: initial upload state, nothing confirmed.
+    expect(await screen.findByLabelText('Quotation PDF file')).toBeInTheDocument()
+    expect(screen.queryByText(/quotation ready for Excel/i)).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /generate consolidated workbook/i }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Client name')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Sequence Number')).not.toBeInTheDocument()
+  })
+
+  it('continues automatic sequence numbering after starting another quotation', async () => {
+    render(<App />)
+    await addQuotation(referencePreview())
+
+    await generateWorkbook()
+    fireEvent.click(screen.getByRole('button', { name: 'Start another quotation' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    // Begin a new quotation and stop at the sequence step.
+    parse.mockResolvedValueOnce(alpagoPreview())
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+
+    // The next number is derived from the confirmed session, not retyped.
+    expect(screen.getByLabelText('Sequence Number')).toHaveTextContent('002')
+    expect(screen.getByRole('button', { name: 'Add to Workbook' })).toBeEnabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+    expect(screen.getByText(/2 quotations/)).toBeInTheDocument()
+  })
+})
+
+describe('session quotations and duplicate protection', () => {
+  /** Adds one quotation by driving the whole journey with a specific file. */
+  async function addQuotation(preview: QuotationPreview, file: File) {
+    parse.mockResolvedValueOnce(preview)
+    chooseAndRead(file)
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+  }
+
+  it('lists every confirmed quotation with its sequence and item count', async () => {
+    render(<App />)
+    await addQuotation(referencePreview(), pdfFile('first.pdf'))
+
+    const table = screen.getByRole('table', { name: /quotations already added/i })
+    const row = within(table).getByRole('row', { name: /001/ })
+    expect(within(row).getByText('QDXB/25/014094/Rev1')).toBeInTheDocument()
+    expect(within(row).getByText('MBRC 466')).toBeInTheDocument()
+    expect(within(row).getByText('3')).toBeInTheDocument()
+    expect(
+      within(row).getByRole('button', { name: /view details for sequence 001/i }),
+    ).toBeInTheDocument()
+  })
+
+  it('opens a read-only preview without changing the session', async () => {
+    render(<App />)
+    await addQuotation(referencePreview(), pdfFile('first.pdf'))
+
+    fireEvent.click(screen.getByRole('button', { name: /view details for sequence 001/i }))
+
+    expect(
+      await screen.findByRole('heading', { name: 'Quotation preview', level: 2 }),
+    ).toBeInTheDocument()
+    expect(screen.getByDisplayValue('MBRC 466')).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close preview' }))
+    await screen.findByLabelText('Quotation PDF file')
+    expect(screen.getByText(/1 quotation/)).toBeInTheDocument()
+  })
+
+  it('shows which sequence numbers are already used', async () => {
+    render(<App />)
+    await addQuotation(referencePreview(), pdfFile('first.pdf'))
+
+    parse.mockResolvedValueOnce(alpagoPreview())
+    chooseAndRead(pdfFile('second.pdf'))
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+
+    expect(screen.getByText(/already used: 001/i)).toBeInTheDocument()
+  })
+
+  it('never offers a sequence number that is already assigned', async () => {
+    render(<App />)
+    await addQuotation(referencePreview(), pdfFile('first.pdf'))
+
+    parse.mockResolvedValueOnce(alpagoPreview())
+    chooseAndRead(pdfFile('second.pdf'))
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+
+    // The offered number is past every confirmed one, and adding just works.
+    const offered = screen.getByLabelText('Sequence Number')
+    expect(offered).toHaveTextContent('002')
+    expect(screen.queryByText(/already assigned/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add to Workbook' })).toBeEnabled()
+  })
+
+  it('refuses the exact same PDF twice', async () => {
+    render(<App />)
+    const bytes = '%PDF-1.4 the same bytes'
+    await addQuotation(referencePreview(), pdfFile('first.pdf', bytes))
+
+    // Same content, even under another name, is the same document.
+    chooseAndRead(pdfFile('renamed.pdf', bytes))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/already been added to this session/i)
+    expect(parse).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses a second file with the same ERP quotation number', async () => {
+    render(<App />)
+    await addQuotation(referencePreview(), pdfFile('first.pdf', 'first bytes'))
+
+    parse.mockResolvedValueOnce(referencePreview())
+    chooseAndRead(pdfFile('second.pdf', 'second bytes'))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(
+      'Quotation QDXB/25/014094/Rev1 has already been added to this session.',
+    )
+    expect(screen.queryByLabelText('Sequence Number')).not.toBeInTheDocument()
+  })
+
+  it('allows a different quotation for the same client', async () => {
+    render(<App />)
+    await addQuotation(referencePreview(), pdfFile('first.pdf', 'first bytes'))
+
+    parse.mockResolvedValueOnce(referencePreview('QDXB/25/014096/Rev1'))
+    chooseAndRead(pdfFile('second.pdf', 'second bytes'))
+
+    await reviewScreen()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('allows a quotation with no ERP quotation number', async () => {
+    render(<App />)
+    await addQuotation(noNumberPreview(), pdfFile('first.pdf', 'first bytes'))
+
+    parse.mockResolvedValueOnce(noNumberPreview())
+    chooseAndRead(pdfFile('second.pdf', 'second bytes'))
+
+    await reviewScreen()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+describe('state communication', () => {
+  /** Adds one quotation by driving the whole journey with a specific file. */
+  async function addQuotation(preview: QuotationPreview, file: File) {
+    parse.mockResolvedValueOnce(preview)
+    chooseAndRead(file)
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+  }
+
+  it('says what is happening while the Excel workbook is generated', async () => {
+    render(<App />)
+    await addQuotation(referencePreview(), pdfFile('first.pdf'))
+
+    let release: (blob: Blob) => void = () => {}
+    genConsolidated.mockImplementationOnce(
+      () => new Promise<Blob>((resolve) => (release = resolve)),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /generate consolidated workbook/i }))
+
+    // Generating is not the same as reading the PDF, so the wording must differ.
+    expect(await screen.findByText(/generating the excel workbook/i)).toBeInTheDocument()
+    expect(screen.queryByText(/reading the quotation/i)).not.toBeInTheDocument()
+
+    release(new Blob(['mock']))
+    await screen.findByRole('heading', { name: /excel file generated/i })
+  })
+
+  it('shows a clear error when the Excel workbook cannot be generated', async () => {
+    render(<App />)
+    await addQuotation(referencePreview(), pdfFile('first.pdf'))
+
+    genConsolidated.mockRejectedValueOnce(new Error('The workbook could not be generated.'))
+    fireEvent.click(screen.getByRole('button', { name: /generate consolidated workbook/i }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/excel generation failed/i)
+    expect(alert).toHaveTextContent(/try again/i)
+
+    // The failure is shown in place; the session and its data are not lost.
+    expect(screen.getByLabelText('Quotation PDF file')).toBeInTheDocument()
+    expect(screen.getByText(/1 quotation ready for Excel/i)).toBeInTheDocument()
+  })
+
+  it('presents the session summary as a positive state, not an error', async () => {
+    render(<App />)
+    await addQuotation(referencePreview(), pdfFile('first.pdf'))
+
+    const summary = screen.getByText(/1 quotation ready for Excel/i)
+    expect(summary.closest('.notice')).toHaveClass('notice--success')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('shows the automatic sequence number as a read-only value, not a blank field', async () => {
+    render(<App />)
+    await addQuotation(referencePreview(), pdfFile('first.pdf'))
+
+    parse.mockResolvedValueOnce(alpagoPreview())
+    chooseAndRead(pdfFile('second.pdf'))
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+
+    // The number is stated outright, so it needs no colour or tag to be understood.
+    const sequence = screen.getByLabelText('Sequence Number')
+    expect(sequence).toHaveTextContent('002')
+    expect(sequence.tagName).toBe('OUTPUT')
+    expect(screen.queryByRole('textbox', { name: 'Sequence Number' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Required')).not.toBeInTheDocument()
+  })
+
+  it('styles the empty line-item state intentionally', async () => {
+    const empty = referencePreview()
+    empty.quotation.items = []
+    empty.review = []
+
+    parse.mockResolvedValueOnce(empty)
+    render(<App />)
+    chooseAndRead(pdfFile('empty.pdf'))
+    await reviewScreen()
+
+    expect(screen.getByText(/no line items were read from this PDF/i)).toHaveClass('empty-state')
+  })
+})
+
+describe('automatic sequence assignment and cancelling a draft', () => {
+  /** Adds one quotation with its automatic number, optionally under a chosen name. */
+  async function addQuotation(preview: QuotationPreview, name = 'quotation.pdf') {
+    parse.mockResolvedValueOnce(preview)
+    chooseAndRead(pdfFile(name))
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+  }
+
+  /** Opens a draft and stops on the automatic sequence step. */
+  async function startDraft(preview: QuotationPreview, name: string) {
+    parse.mockResolvedValueOnce(preview)
+    chooseAndRead(pdfFile(name))
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+  }
+
+  it('numbers quotations in order without any typing', async () => {
+    render(<App />)
+
+    await startDraft(referencePreview(), 'first.pdf')
+    expect(screen.getByLabelText('Sequence Number')).toHaveTextContent('001')
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    await startDraft(referencePreview('QDXB/25/014095/Rev1'), 'second.pdf')
+    expect(screen.getByLabelText('Sequence Number')).toHaveTextContent('002')
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    await startDraft(referencePreview('QDXB/25/014096/Rev1'), 'third.pdf')
+    expect(screen.getByLabelText('Sequence Number')).toHaveTextContent('003')
+  })
+
+  it('consumes a number only when the quotation is actually added', async () => {
+    render(<App />)
+    await addQuotation(referencePreview(), 'first.pdf')
+    await addQuotation(referencePreview('QDXB/25/014095/Rev1'), 'second.pdf')
+
+    // The third number is offered, but the draft is cancelled instead of added.
+    await startDraft(alpagoPreview(), 'third.pdf')
+    expect(screen.getByLabelText('Sequence Number')).toHaveTextContent('003')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    // 003 was never used, so the next quotation still gets 003.
+    await startDraft(referencePreview('QDXB/25/014096/Rev1'), 'fourth.pdf')
+    expect(screen.getByLabelText('Sequence Number')).toHaveTextContent('003')
+  })
+
+  it('cancels the draft without touching the confirmed session', async () => {
+    render(<App />)
+    await addQuotation(referencePreview(), 'first.pdf')
+
+    parse.mockResolvedValueOnce(alpagoPreview())
+    chooseAndRead(pdfFile('second.pdf'))
+    await reviewScreen()
+    fireEvent.change(screen.getByLabelText('Client name'), {
+      target: { value: 'A CLIENT THAT MUST BE DISCARDED' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    // Back at the start, with the confirmed quotation untouched...
+    await screen.findByLabelText('Quotation PDF file')
+    expect(screen.getByText(/1 quotation ready for Excel/i)).toBeInTheDocument()
+    expect(screen.getByText(/3 line item/i)).toBeInTheDocument()
+    expect(genConsolidated).not.toHaveBeenCalled()
+
+    // ...and with no part of the cancelled draft left on screen.
+    expect(screen.queryByLabelText('Client name')).not.toBeInTheDocument()
+    expect(screen.queryByText('A CLIENT THAT MUST BE DISCARDED')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add to Workbook' })).not.toBeInTheDocument()
+  })
+
+  it('cancels a draft that was never added and leaves the session untouched', async () => {
+    render(<App />)
+
+    parse.mockResolvedValueOnce(alpagoPreview())
+    chooseAndRead(pdfFile('first.pdf'))
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await screen.findByLabelText('Quotation PDF file')
+    expect(screen.queryByText(/quotation ready for Excel/i)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Client name')).not.toBeInTheDocument()
+    expect(parse).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives every line item of one quotation the same sequence number', async () => {
+    render(<App />)
+    await addQuotation(referencePreview(), 'first.pdf')
+
+    genConsolidated.mockResolvedValueOnce(new Blob(['mock']))
+    fireEvent.click(screen.getByRole('button', { name: /generate consolidated workbook/i }))
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+
+    // One quotation, one sequence number, shared by all of its line items.
+    const request = genConsolidated.mock.calls[0][0]
+    expect(request.quotations).toHaveLength(1)
+    expect(request.quotations[0].quotation.items).toHaveLength(3)
+    expect(request.quotations[0].sequence_number).toBe('001')
+  })
+})
+
+describe('table readability', () => {
+  it('labels the session action column and aligns the narrow columns', async () => {
+    render(<App />)
+
+    parse.mockResolvedValueOnce(referencePreview())
+    chooseAndRead(pdfFile('first.pdf'))
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    const table = screen.getByRole('table', { name: /quotations already added/i })
+    expect(within(table).getByRole('columnheader', { name: 'Action' })).toHaveClass('align-center')
+    expect(within(table).getByRole('columnheader', { name: 'Seq.' })).toHaveClass('align-center')
+    expect(within(table).getByRole('columnheader', { name: 'Items' })).toHaveClass('align-center')
+    expect(within(table).getByRole('columnheader', { name: 'Client' })).not.toHaveClass(
+      'align-center',
+    )
+
+    // The action button sits in that column on the quotation's own row.
+    const row = within(table).getByRole('row', { name: /001/ })
+    const view = within(row).getByRole('button', { name: /view details for sequence 001/i })
+    expect(view.closest('td')).toHaveClass('align-center')
+  })
+
+  it('labels the line-item action column and aligns quantity and unit', async () => {
+    render(<App />)
+
+    parse.mockResolvedValueOnce(referencePreview())
+    chooseAndRead(pdfFile('first.pdf'))
+    await reviewScreen()
+
+    const table = screen.getByRole('table', { name: /line items read from the quotation/i })
+    expect(within(table).getByRole('columnheader', { name: 'Action' })).toHaveClass('align-center')
+    expect(within(table).getByRole('columnheader', { name: 'SR#' })).toHaveClass('align-center')
+    expect(within(table).getByRole('columnheader', { name: 'Quantity' })).toHaveClass('align-right')
+    expect(within(table).getByRole('columnheader', { name: 'Unit' })).toHaveClass('align-center')
+    expect(within(table).getByRole('columnheader', { name: 'Description' })).not.toHaveClass(
+      'align-right',
+    )
+  })
+
+  it('keeps each delete action on the row it belongs to', async () => {
+    render(<App />)
+
+    parse.mockResolvedValueOnce(referencePreview())
+    chooseAndRead(pdfFile('first.pdf'))
+    await reviewScreen()
+
+    const table = screen.getByRole('table', { name: /line items read from the quotation/i })
+    const rows = within(table).getAllByRole('row')
+    // One header row plus one row per line item.
+    expect(rows).toHaveLength(4)
+
+    // The delete button for line 2 lives in line 2's own row, and nowhere else.
+    const second = screen.getByLabelText('Line 2 description').closest('tr') as HTMLElement
+    expect(within(second).getByRole('button', { name: 'Delete line 2' })).toBeInTheDocument()
+    expect(within(rows[1]).getByRole('button', { name: 'Delete line 1' })).toBeInTheDocument()
+    expect(within(rows[1]).queryByRole('button', { name: 'Delete line 2' })).not.toBeInTheDocument()
+  })
+})
+
+
+describe('clearing the session', () => {
+  /** Adds one quotation, generates the workbook, and lands on the completed screen. */
+  async function addAndGenerate(preview: QuotationPreview, name = 'first.pdf') {
+    parse.mockResolvedValueOnce(preview)
+    chooseAndRead(pdfFile(name))
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    genConsolidated.mockResolvedValueOnce(new Blob(['mock']))
+    fireEvent.click(screen.getByRole('button', { name: /generate consolidated workbook/i }))
+    await screen.findByRole('heading', { name: /excel file generated/i })
+  }
+
+  it('asks before removing anything', async () => {
+    render(<App />)
+    await addAndGenerate(referencePreview())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear session' }))
+
+    // A question is asked, and nothing has been removed yet.
+    expect(screen.getByText(/clear all quotations\?/i)).toBeInTheDocument()
+    expect(screen.getByText(/this action cannot be undone/i)).toBeInTheDocument()
+    // The completed screen is still showing the session it had.
+    expect(screen.getByRole('heading', { name: /excel file generated/i })).toBeInTheDocument()
+    expect(genConsolidated).toHaveBeenCalledTimes(1)
+  })
+
+  it('says exactly what will be deleted', async () => {
+    render(<App />)
+    await addAndGenerate(referencePreview())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear session' }))
+
+    const question = screen
+      .getByText(/clear all quotations\?/i)
+      .closest('[role="group"]') as HTMLElement
+    expect(question).toHaveTextContent('1 quotation')
+    expect(question).toHaveTextContent('3 line items')
+  })
+
+  it('keeps every quotation when the confirmation is declined', async () => {
+    render(<App />)
+    await addAndGenerate(referencePreview())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear session' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Keep session' }))
+
+    // The question is gone and the completed screen is back to normal.
+    expect(screen.queryByText(/clear all quotations\?/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /download excel/i })).toBeInTheDocument()
+
+    // The quotation is still in the session.
+    fireEvent.click(screen.getByRole('button', { name: 'Start another quotation' }))
+    await screen.findByLabelText('Quotation PDF file')
+    const table = screen.getByRole('table', { name: /quotations already added/i })
+    expect(within(table).getByRole('row', { name: /001/ })).toBeInTheDocument()
+  })
+
+  it('removes every quotation when the confirmation is accepted', async () => {
+    render(<App />)
+    await addAndGenerate(referencePreview())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear session' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear session' }))
+
+    // A completely fresh session: nothing confirmed, nothing to generate.
+    await screen.findByLabelText('Quotation PDF file')
+    expect(screen.queryByText(/quotation ready for Excel/i)).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /generate consolidated workbook/i }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('table', { name: /quotations already added/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('moves keyboard focus to the question and offers two real choices', async () => {
+    render(<App />)
+    await addAndGenerate(referencePreview())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear session' }))
+
+    // Focus moves to the question, so the choice is announced and reachable.
+    expect(screen.getByText(/clear all quotations\?/i)).toHaveFocus()
+    expect(screen.getByRole('button', { name: 'Keep session' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Clear session' })).toBeInTheDocument()
+  })
+
+  it('dismisses the question with the Escape key', async () => {
+    render(<App />)
+    await addAndGenerate(referencePreview())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear session' }))
+    expect(screen.getByText(/clear all quotations\?/i)).toBeInTheDocument()
+
+    fireEvent.keyDown(screen.getByText(/clear all quotations\?/i), { key: 'Escape' })
+
+    expect(screen.queryByText(/clear all quotations\?/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /download excel/i })).toBeInTheDocument()
+  })
+})
+
+describe('quotation-added feedback', () => {
+  async function addOne(name = 'first.pdf', preview = referencePreview()) {
+    parse.mockResolvedValueOnce(preview)
+    chooseAndRead(pdfFile(name))
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+  }
+
+  it('confirms the quotation was added to the session', async () => {
+    render(<App />)
+    await addOne()
+
+    const confirmation = screen.getByText(/quotation added to session/i)
+    expect(confirmation.closest('.notice')).toHaveClass('notice--success')
+    expect(screen.getByText(/sequence 001 has been assigned/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/upload another quotation or generate the Excel workbook/i),
+    ).toBeInTheDocument()
+  })
+
+  it('never claims the Excel workbook was written', async () => {
+    render(<App />)
+    await addOne()
+
+    expect(screen.queryByText(/added to excel/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/workbook updated/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/excel file generated/i)).not.toBeInTheDocument()
+    expect(genConsolidated).not.toHaveBeenCalled()
+  })
+
+  it('clears the confirmation once another quotation is being read', async () => {
+    render(<App />)
+    await addOne()
+    expect(screen.getByText(/quotation added to session/i)).toBeInTheDocument()
+
+    // Reading the next file is a new task, so the old confirmation goes away.
+    parse.mockResolvedValueOnce(referencePreview('QDXB/25/014095/Rev1'))
+    chooseAndRead(pdfFile('second.pdf'))
+    await reviewScreen()
+    expect(screen.queryByText(/quotation added to session/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('read-only session preview', () => {
+  async function addOne() {
+    parse.mockResolvedValueOnce(referencePreview())
+    chooseAndRead(pdfFile('first.pdf'))
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+  }
+
+  it('says the quotation is already saved and cannot be edited here', async () => {
+    render(<App />)
+    await addOne()
+
+    fireEvent.click(screen.getByRole('button', { name: /view details for sequence 001/i }))
+
+    const banner = await screen.findByText(/viewing saved quotation/i)
+    expect(banner.closest('.notice')).toHaveClass('notice--info')
+    // The banner names the exact quotation on screen.
+    expect(banner.parentElement).toHaveTextContent('Sequence 001')
+    expect(banner.parentElement).toHaveTextContent('QDXB/25/014094/Rev1')
+    expect(screen.getByText(/cannot be edited here/i)).toBeInTheDocument()
+    // Informational, not a warning.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('leaves the session untouched when the preview is closed', async () => {
+    render(<App />)
+    await addOne()
+
+    fireEvent.click(screen.getByRole('button', { name: /view details for sequence 001/i }))
+    await screen.findByText(/viewing saved quotation/i)
+    fireEvent.click(screen.getByRole('button', { name: 'Close preview' }))
+
+    await screen.findByLabelText('Quotation PDF file')
+    const table = screen.getByRole('table', { name: /quotations already added/i })
+    expect(within(table).getByRole('row', { name: /001/ })).toBeInTheDocument()
+    expect(screen.getByText(/1 quotation ready for Excel/i)).toBeInTheDocument()
+
+    // And the workbook still carries the same, unchanged quotation.
+    genConsolidated.mockResolvedValueOnce(new Blob(['mock']))
+    fireEvent.click(screen.getByRole('button', { name: /generate consolidated workbook/i }))
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+    const request = genConsolidated.mock.calls[0][0]
+    expect(request.quotations.map((q) => q.sequence_number)).toEqual(['001'])
+    expect(request.quotations[0].quotation.quotation_number).toBe('QDXB/25/014094/Rev1')
+  })
+})
+
+describe('review action area and scanning', () => {
+  async function toReview(preview = referencePreview()) {
+    parse.mockResolvedValueOnce(preview)
+    chooseAndRead(pdfFile('first.pdf'))
+    await reviewScreen()
+  }
+
+  it('keeps exactly one Add to Workbook action, in the review action area', async () => {
+    render(<App />)
+    await toReview()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+
+    // One button, not two independently working copies.
+    expect(screen.getAllByRole('button', { name: 'Add to Workbook' })).toHaveLength(1)
+    const add = screen.getByRole('button', { name: 'Add to Workbook' })
+    expect(add.closest('.review-actions')).toBeInTheDocument()
+    expect(add).toBeEnabled()
+
+    // And it still works from there.
+    fireEvent.click(add)
+    await screen.findByLabelText('Quotation PDF file')
+    expect(screen.getByText(/1 quotation ready for Excel/i)).toBeInTheDocument()
+  })
+
+  it('keeps Add to Workbook and Cancel in the same action area', async () => {
+    render(<App />)
+    await toReview()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+
+    const bar = screen
+      .getByRole('button', { name: 'Add to Workbook' })
+      .closest('.review-actions') as HTMLElement
+    expect(within(bar).getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+    // Add to Workbook keeps the primary styling; Cancel stays secondary.
+    expect(within(bar).getByRole('button', { name: 'Add to Workbook' })).toHaveClass('primary')
+    expect(within(bar).getByRole('button', { name: 'Cancel' })).toHaveClass('secondary')
+  })
+
+  it('shows the sequence number and review state in the action area', async () => {
+    render(<App />)
+    await toReview()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+
+    const bar = screen
+      .getByRole('button', { name: 'Add to Workbook' })
+      .closest('.review-actions') as HTMLElement
+    expect(bar).toHaveTextContent('Sequence 001')
+    expect(bar).toHaveTextContent(/line item needs attention/i)
+  })
+
+  it('summarises what needs review in plain words', async () => {
+    render(<App />)
+    await toReview()
+
+    expect(screen.getByText('Review required')).toBeInTheDocument()
+    expect(
+      screen.getByText(/1 line item needs attention before this quotation can be added/i),
+    ).toBeInTheDocument()
+  })
+
+  it('reports a quotation with no flagged fields as ready', async () => {
+    const clean = referencePreview()
+    clean.review = []
+    render(<App />)
+    await toReview(clean)
+
+    expect(screen.getByText('Ready for review')).toBeInTheDocument()
+    expect(
+      screen.getByText(/all extracted fields passed the current validation checks/i),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Review required')).not.toBeInTheDocument()
+  })
+
+  it('counts header fields and line items separately', async () => {
+    const both = referencePreview()
+    both.review = [
+      { field: 'project_name', reason: 'missing', message: 'Check the project name.' },
+      { field: 'items[1].quantity', reason: 'missing', message: 'Check the quantity.' },
+    ]
+    render(<App />)
+    await toReview(both)
+
+    expect(
+      screen.getByText(
+        /1 quotation field and 1 line item need attention before this quotation can be added/i,
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('shows how many line items were read', async () => {
+    render(<App />)
+    await toReview()
+
+    const section = screen.getByRole('heading', { name: 'Line items' }).closest('.card') as HTMLElement
+    expect(within(section).getByText('3 items')).toBeInTheDocument()
+  })
+
+  it('leaves Cancel working and non-destructive from the action area', async () => {
+    render(<App />)
+
+    parse.mockResolvedValueOnce(referencePreview())
+    chooseAndRead(pdfFile('first.pdf'))
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    parse.mockResolvedValueOnce(alpagoPreview())
+    chooseAndRead(pdfFile('second.pdf'))
+    await reviewScreen()
+    const reviewBar = screen
+      .getByRole('button', { name: 'Confirm quotation' })
+      .closest('.review-actions') as HTMLElement
+    fireEvent.click(within(reviewBar).getByRole('button', { name: 'Cancel' }))
+
+    await screen.findByLabelText('Quotation PDF file')
+    const table = screen.getByRole('table', { name: /quotations already added/i })
+    // Header row plus the one quotation that was really added.
+    expect(within(table).getAllByRole('row')).toHaveLength(2)
+    expect(within(table).getByRole('row', { name: /001/ })).toBeInTheDocument()
   })
 })

@@ -1,8 +1,12 @@
 """FastAPI application entrypoint.
 
-Scope note: this module intentionally exposes only a health endpoint.
-PDF parsing, preview and Excel generation endpoints are added in the later
-phases described in AGENTS.md section 16. Nothing here guesses business values.
+Wires the API router, CORS and structured error handling. All quotation logic
+lives behind the service and parser layers; this module only assembles the
+application.
+
+Scope note: the Excel generation endpoint is not registered yet. The workbook
+contract exists in `app.excel.base` and the endpoint is added in the phase that
+implements it (AGENTS.md sections 7 and 16).
 """
 
 import os
@@ -11,7 +15,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import router as api_router
+from app.api.errors import register_error_handlers
+from app.api.router import api_router
 from app.version import API_VERSION
 
 load_dotenv()
@@ -24,18 +29,24 @@ def _cors_origins() -> list[str]:
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
-app = FastAPI(
-    title="Quotation-to-Excel Automation System",
-    version=API_VERSION,
-    description="Extract quotation data from ERP quotation PDFs for human review.",
-)
+def create_app() -> FastAPI:
+    application = FastAPI(
+        title="Quotation-to-Excel Automation System",
+        version=API_VERSION,
+        description="Extract quotation data from ERP quotation PDFs for human review.",
+    )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins(),
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
-)
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins(),
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
 
-app.include_router(api_router, prefix="/api")
+    register_error_handlers(application)
+    application.include_router(api_router, prefix="/api")
+    return application
+
+
+app = create_app()

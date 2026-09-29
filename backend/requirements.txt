@@ -7,3 +7,12 @@ uvicorn[standard]==0.54.0
 pydantic==2.13.5
 python-multipart==0.0.32
 python-dotenv==1.2.3
+
+# PDF reading. The quotation table is drawn with ruled cells, so the extractor
+# must expose text positions and the lines the PDF draws; see
+# `app/parser/pdfplumber_extractor.py` and UPDATED_DETAILS.md sections 1 and 5.
+pdfplumber==0.11.10
+
+# Excel generation. The confirmed quotation data is written to .xlsx workbooks
+# using openpyxl for the Summary worksheet structure.
+openpyxl==3.1.5
