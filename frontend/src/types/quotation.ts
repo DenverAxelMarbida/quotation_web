@@ -10,7 +10,15 @@
  */
 
 export type QuotationItem = {
-  sr: number | null
+  /**
+   * SR# exactly as the ERP printed it, kept as text.
+   *
+   * It is an identifier, not a quantity: hierarchical numbers such as `1.1` or
+   * `9.133` lose their trailing zeros if they are read as numbers, so `1.130`
+   * would arrive as `1.13`. Mirrors `QuotationItem.sr` in
+   * `backend/app/models/quotation.py`.
+   */
+  sr: string | null
   description: string
   quantity: number | null
   unit: string | null

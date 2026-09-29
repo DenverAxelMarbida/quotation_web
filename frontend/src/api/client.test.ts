@@ -83,7 +83,7 @@ describe('quotation endpoints', () => {
         quotation_number: 'Q-1',
         client_name: 'ACME',
         project_name: null,
-        items: [{ sr: 1, description: 'flooring', quantity: 30, unit: 'm2' }],
+        items: [{ sr: '1', description: 'flooring', quantity: 30, unit: 'm2' }],
       },
       review: [{ field: 'project_name', reason: 'missing', message: 'not found' }],
       source: { filename: 'quote.pdf', page_count: 1, warnings: [] },

@@ -24,7 +24,7 @@ def preview() -> QuotationPreview:
             quotation_number="Q-1",
             client_name="ACME",
             project_name="P-1",
-            items=[QuotationItem(sr=1, description="flooring", quantity=30, unit="m2")],
+            items=[QuotationItem(sr="1", description="flooring", quantity=30, unit="m2")],
         ),
         review=[
             ReviewFlag(
@@ -108,7 +108,8 @@ def _confirmed(seq: str, client_name: str, items: list[tuple[int, str, float, st
             "client_name": client_name,
             "project_name": "P-1",
             "items": [
-                {"sr": sr, "description": desc, "quantity": qty, "unit": unit}
+                # The SR# travels as printed text, the way the parser emits it.
+                {"sr": str(sr), "description": desc, "quantity": qty, "unit": unit}
                 for sr, desc, qty, unit in items
             ],
         },

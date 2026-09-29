@@ -772,8 +772,231 @@ def mismatched_columns_pdf() -> bytes:
     return _wrap([first, page])
 
 
+# ---------------------------------------------------------------------------
+# A borderless layout: the item grid drawn with horizontal rules only
+# ---------------------------------------------------------------------------
+#
+# One real ERP quotation draws its item table with no vertical rules at all.
+# Every row is separated by a full-width horizontal rule and the column
+# boundaries exist only in the alignment of the text, so a parser that requires
+# vertical dividers finds no table and returns an empty quotation. This fixture
+# pins that layout.
+#
+# The geometry mirrors the real document: a header band whose labels start the
+# columns, description text flush at x=60, the quantity right of x=379, the unit
+# at x=414, and one horizontal rule per row. "PRICE" and "DISC" are the wording
+# the real header uses and are deliberately left as labels the parser does not
+# map, so these tests also show the columns come from SR#, DESCRIPTION and QTY
+# alone. Every string below is invented.
+
+BORDERLESS_HEADER_TOP = 107.8
+BORDERLESS_HEADER_BOTTOM = 239.8
+BORDERLESS_TABLE_TOP = 268.3
+BORDERLESS_COLUMN_HEADER_BOTTOM = 292.3
+BORDERLESS_FOOTER = 721.65
+
+BORDERLESS_SR_RIGHT = 54.0
+BORDERLESS_DESCRIPTION_X = 60.0
+BORDERLESS_QTY_X = 379.1
+BORDERLESS_UNIT_X = 414.0
+BORDERLESS_PRICE_X = 454.0
+BORDERLESS_DISCOUNT_X = 491.9
+BORDERLESS_TOTAL_X = 534.0
+BORDERLESS_LINE_STEP = 12.0
+
+BORDERLESS_HEADER_LABELS = (
+    ("SR#", 24.0),
+    ("DESCRIPTION", 188.3),
+    ("QTY", 399.4),
+    ("PRICE", 452.6),
+    ("DISC", 497.5),
+    ("TOTAL/AED", 528.0),
+)
+BORDERLESS_HEADER_TOP_TEXT = 281.0
+
+
+def _draw_borderless_row(
+    page: PageBuilder,
+    *,
+    top: float,
+    sr: str,
+    lines: tuple[str, ...] = (),
+    quantity: str | None = None,
+    unit: str | None = None,
+    price: str | None = None,
+    discount: str | None = None,
+    total: str | None = None,
+) -> None:
+    """Draw one borderless row: an SR#, its description lines, then the figures.
+
+    The first description line shares the row's baseline, so it is part of the
+    same visual line as the SR# the way the real document prints it. The SR# is
+    right-aligned to the same edge the real document uses, so a longer
+    hierarchical number does not run into the description that follows it.
+    """
+    page.text(BORDERLESS_SR_RIGHT - (4.0 * len(sr) - 2.0), top, sr)
+    for offset, line in enumerate(lines):
+        page.text(BORDERLESS_DESCRIPTION_X, top + offset * BORDERLESS_LINE_STEP, line)
+    for value, x in (
+        (quantity, BORDERLESS_QTY_X),
+        (unit, BORDERLESS_UNIT_X),
+        (price, BORDERLESS_PRICE_X),
+        (discount, BORDERLESS_DISCOUNT_X),
+        (total, BORDERLESS_TOTAL_X),
+    ):
+        if value is not None:
+            page.text(x, top, value)
+
+
+def _borderless_first_page() -> PageBuilder:
+    page = PageBuilder()
+    _draw_header(page, _variant_header(with_project=True))
+    for top in (
+        BORDERLESS_HEADER_TOP,
+        BORDERLESS_HEADER_BOTTOM,
+        BORDERLESS_TABLE_TOP,
+        BORDERLESS_COLUMN_HEADER_BOTTOM,
+    ):
+        page.horizontal_rule(top)
+    for label, x in BORDERLESS_HEADER_LABELS:
+        page.text(x, BORDERLESS_HEADER_TOP_TEXT, label)
+
+    # A section heading: a leading integer and no figures, so it must not become
+    # a line item.
+    page.text(38.2, 299.8, "1 SECTION ONE GROUP - 33 VILLAS")
+
+    page.horizontal_rule(315.55)
+    _draw_borderless_row(
+        page,
+        top=323.33,
+        sr="1.1",
+        lines=("WF-01AR", "Supply and installation", "Engineered flooring", "Glue down method"),
+        quantity="34.00",
+        unit="m2",
+        price="610.00",
+        discount="50.00",
+        total="20,740.00",
+    )
+    page.horizontal_rule(411.55)
+    _draw_borderless_row(
+        page,
+        top=419.33,
+        sr="1.64",
+        lines=("WF-02 AR", "Threshold", "Supply and installation"),
+        quantity="33.00",
+        unit="L.M.",
+        price="170.00",
+        discount="95.00",
+        total="2,475.00",
+    )
+    page.horizontal_rule(567.55)
+    _draw_borderless_row(
+        page,
+        top=575.33,
+        sr="1.67",
+        quantity="33.00",
+        unit="L.M.",
+        price="170.00",
+        discount="95.00",
+        total="2,475.00",
+    )
+    page.horizontal_rule(687.55)
+    page.horizontal_rule(BORDERLESS_FOOTER)
+    return page
+
+
+def _borderless_second_page() -> PageBuilder:
+    page = PageBuilder()
+    # The last row of page 1 has no description of its own; it finishes here,
+    # above the first rule, with no SR#.
+    for offset, line in enumerate(
+        ("Threshold", "Supply and installation", "Threshold Width: 190mm")
+    ):
+        page.text(BORDERLESS_DESCRIPTION_X, 14.73 + offset * BORDERLESS_LINE_STEP, line)
+
+    page.horizontal_rule(54.0)
+    _draw_borderless_row(
+        page,
+        top=61.78,
+        sr="2.42",
+        lines=("WF-01 W", "Engineered flooring", "Glue down method"),
+        quantity="1,897.00",
+        unit="m2",
+        price="425.00",
+        discount="50.00",
+        total="711,375.00",
+    )
+    page.horizontal_rule(162.0)
+    # A subtotal: figures in the right block and no SR#, so it must not become an
+    # item and must not be appended to the row above.
+    page.text(324.6, 175.0, "SECTION ONE GROUPTotal : 5,933,004.00")
+    page.horizontal_rule(198.0)
+    page.text(38.2, 210.0, "3 SECTION THREE GROUP - 35 VILLAS")
+    page.horizontal_rule(234.0)
+    _draw_borderless_row(
+        page,
+        top=242.0,
+        sr="9.133",
+        lines=("Self Levelling", "Up to 2-3mm thickness", "(Excluding the stairs)"),
+        quantity="31,547.00",
+        unit="m2",
+        price="45.00",
+        discount="45.00",
+        total="0.00",
+    )
+    # A notes block inside the same ruled block as the last row, separated by a
+    # gap far larger than a description line step, so it must not be appended.
+    page.text(BORDERLESS_DESCRIPTION_X, 300.0, "NOTE:")
+    page.text(BORDERLESS_DESCRIPTION_X, 324.0, "1.) Quantity is provided by the client")
+    page.horizontal_rule(366.0)
+    # Two SR# numbers whose trailing zeros are part of the identifier. Read as
+    # numbers they would come back as 1.13 and 7.9 and stop matching anything in
+    # the document, so they have to survive as the printed text.
+    _draw_borderless_row(
+        page,
+        top=373.78,
+        sr="1.130",
+        lines=("WF-03 Skirting", "Solid oak", "Fixed with adhesive"),
+        quantity="120.00",
+        unit="L.M.",
+        price="95.00",
+        discount="0.00",
+        total="11,400.00",
+    )
+    page.horizontal_rule(447.55)
+    _draw_borderless_row(
+        page,
+        top=455.33,
+        sr="7.90",
+        lines=("WF-04 Wall panel", "Oak veneer"),
+        quantity="64.00",
+        unit="m2",
+        price="1,250.00",
+        discount="0.00",
+        total="80,000.00",
+    )
+    page.horizontal_rule(493.55)
+    page.horizontal_rule(BORDERLESS_FOOTER)
+    return page
+
+
+def borderless_pdf() -> bytes:
+    """A quotation whose item grid is drawn with horizontal rules only.
+
+    There are no vertical dividers at all, so the column boundaries have to come
+    from the header labels; the grid continues onto the second page with no
+    repeated header; and a section heading, a subtotal and a notes block share
+    the pages but must all stay out of the items.
+
+    Two of the SR# numbers end in a zero. They are identifiers rather than
+    quantities, so reading them as numbers would silently rewrite them.
+    """
+    return _wrap([_borderless_first_page(), _borderless_second_page()])
+
+
 __all__ = [
     "Row",
+    "borderless_pdf",
     "combined_qty_unit_pdf",
     "continuation_pdf",
     "inconsistent_row_pdf",

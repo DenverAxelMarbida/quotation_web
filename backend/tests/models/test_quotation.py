@@ -42,12 +42,12 @@ def test_unknown_fields_are_rejected() -> None:
 
 def test_units_are_free_text() -> None:
     # An unfamiliar unit must be representable instead of rejected.
-    assert QuotationItem(sr=1, unit="roll").unit == "roll"
-    assert QuotationItem(sr=1, unit="m²").unit == "m²"
+    assert QuotationItem(sr="1", unit="roll").unit == "roll"
+    assert QuotationItem(sr="1", unit="m²").unit == "m²"
 
 
 def test_decimal_quantities_are_preserved() -> None:
-    assert QuotationItem(sr=1, quantity=7.5).quantity == 7.5
+    assert QuotationItem(sr="1", quantity=7.5).quantity == 7.5
 
 
 def test_missing_sr_is_allowed_because_it_is_never_invented() -> None:
@@ -59,7 +59,7 @@ def test_a_quotation_holds_many_items_sharing_one_header() -> None:
         quotation_number="Q1",
         client_name="ACME",
         project_name="P1",
-        items=[QuotationItem(sr=1), QuotationItem(sr=2), QuotationItem(sr=3)],
+        items=[QuotationItem(sr="1"), QuotationItem(sr="2"), QuotationItem(sr="3")],
     )
 
     assert len(quotation.items) == 3

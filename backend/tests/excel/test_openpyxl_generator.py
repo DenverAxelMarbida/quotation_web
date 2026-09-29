@@ -32,7 +32,8 @@ def _quotation(
         client_name=client,
         project_name=project,
         items=[
-            QuotationItem(sr=sr, description=desc, quantity=qty, unit=unit)
+            # The SR# is an identifier, so it reaches the model as printed text.
+            QuotationItem(sr=str(sr), description=desc, quantity=qty, unit=unit)
             for sr, desc, qty, unit in items
         ],
     )
@@ -244,7 +245,7 @@ def test_generates_valid_xlsx_workbook():
         quotation_number="TEST/001",
         client_name="Test Client",
         project_name="Test Project",
-        items=[QuotationItem(sr=1, description="Test item", quantity=10, unit="m2")],
+        items=[QuotationItem(sr="1", description="Test item", quantity=10, unit="m2")],
     )
 
     xlsx_bytes = generator.generate(quotation)
@@ -262,7 +263,7 @@ def test_creates_summary_worksheet():
         quotation_number="TEST/001",
         client_name="Test Client",
         project_name="Test Project",
-        items=[QuotationItem(sr=1, description="Test item", quantity=10, unit="m2")],
+        items=[QuotationItem(sr="1", description="Test item", quantity=10, unit="m2")],
     )
 
     xlsx_bytes = generator.generate(quotation)
@@ -279,7 +280,7 @@ def test_writes_correct_header_row():
         quotation_number="TEST/001",
         client_name="Test Client",
         project_name="Test Project",
-        items=[QuotationItem(sr=1, description="Test item", quantity=10, unit="m2")],
+        items=[QuotationItem(sr="1", description="Test item", quantity=10, unit="m2")],
     )
 
     xlsx_bytes = generator.generate(quotation)
@@ -313,7 +314,7 @@ def test_maps_quotation_fields_correctly():
         project_name="MBRC 466",
         items=[
             QuotationItem(
-                sr=1,
+                sr="1",
                 description="Engineered Oak Flooring 15/4 x 120 x 600mm",
                 quantity=34,
                 unit="m2",
@@ -371,7 +372,7 @@ def test_writes_one_row_per_item_single_item():
         quotation_number="TEST/001",
         client_name="Test Client",
         project_name="Test Project",
-        items=[QuotationItem(sr=1, description="Item 1", quantity=10, unit="m2")],
+        items=[QuotationItem(sr="1", description="Item 1", quantity=10, unit="m2")],
     )
 
     xlsx_bytes = generator.generate(quotation)
@@ -390,9 +391,9 @@ def test_writes_one_row_per_item_multiple_items():
         client_name="ALPAGO DESIGN AND BUILD CONTRACTING L.L.C S.O.C",
         project_name="MBRC 466",
         items=[
-            QuotationItem(sr=1, description="Flooring 15/4", quantity=34, unit="m2"),
-            QuotationItem(sr=2, description="Flooring 16/4", quantity=88, unit="m2"),
-            QuotationItem(sr=3, description="Self-levelling", quantity=122, unit="m2"),
+            QuotationItem(sr="1", description="Flooring 15/4", quantity=34, unit="m2"),
+            QuotationItem(sr="2", description="Flooring 16/4", quantity=88, unit="m2"),
+            QuotationItem(sr="3", description="Self-levelling", quantity=122, unit="m2"),
         ],
     )
 
@@ -422,8 +423,8 @@ def test_all_items_share_same_quotation_fields():
         client_name="Shared Client",
         project_name="Shared Project",
         items=[
-            QuotationItem(sr=1, description="Item 1", quantity=10, unit="m2"),
-            QuotationItem(sr=2, description="Item 2", quantity=20, unit="m2"),
+            QuotationItem(sr="1", description="Item 1", quantity=10, unit="m2"),
+            QuotationItem(sr="2", description="Item 2", quantity=20, unit="m2"),
         ],
     )
 
@@ -474,7 +475,7 @@ def test_status_conditional_formatting_covers_the_whole_row():
         quotation_number="TEST/001",
         client_name="Test Client",
         project_name="Test Project",
-        items=[QuotationItem(sr=1, description="Item", quantity=1, unit="m2")],
+        items=[QuotationItem(sr="1", description="Item", quantity=1, unit="m2")],
     )
 
     workbook = load_workbook(BytesIO(generator.generate(quotation)))
@@ -519,7 +520,7 @@ def test_status_data_validation_offers_exact_options():
         quotation_number="TEST/001",
         client_name="Test Client",
         project_name="Test Project",
-        items=[QuotationItem(sr=1, description="Item", quantity=1, unit="m2")],
+        items=[QuotationItem(sr="1", description="Item", quantity=1, unit="m2")],
     )
 
     workbook = load_workbook(BytesIO(generator.generate(quotation)))
@@ -543,7 +544,7 @@ def test_preserves_multiline_descriptions():
         quotation_number="TEST/001",
         client_name="Test Client",
         project_name="Test Project",
-        items=[QuotationItem(sr=1, description=multiline_desc, quantity=34, unit="m2")],
+        items=[QuotationItem(sr="1", description=multiline_desc, quantity=34, unit="m2")],
     )
 
     xlsx_bytes = generator.generate(quotation)
@@ -561,7 +562,7 @@ def test_handles_decimal_quantities():
         quotation_number="TEST/001",
         client_name="Test Client",
         project_name="Test Project",
-        items=[QuotationItem(sr=1, description="Item", quantity=34.5, unit="m2")],
+        items=[QuotationItem(sr="1", description="Item", quantity=34.5, unit="m2")],
     )
 
     xlsx_bytes = generator.generate(quotation)
@@ -580,7 +581,7 @@ def test_handles_special_characters_in_fields():
         project_name="Project #123 - Phase 1",
         items=[
             QuotationItem(
-                sr=1,
+                sr="1",
                 description='Item with "quotes" and & special chars',
                 quantity=10,
                 unit="m²",  # Unicode character
@@ -609,7 +610,7 @@ def sample_workbook():
         quotation_number="TEST/001",
         client_name="Test Client",
         project_name="Test Project",
-        items=[QuotationItem(sr=1, description="Item", quantity=2, unit="m2")],
+        items=[QuotationItem(sr="1", description="Item", quantity=2, unit="m2")],
     )
     return load_workbook(BytesIO(generator.generate(quotation)))
 
@@ -637,7 +638,7 @@ def _sheet_for(description: str):
         quotation_number="TEST/001",
         client_name="Test Client",
         project_name="Test Project",
-        items=[QuotationItem(sr=1, description=description, quantity=1, unit="m2")],
+        items=[QuotationItem(sr="1", description=description, quantity=1, unit="m2")],
     )
     return load_workbook(BytesIO(generator.generate(quotation)))["Summary"]
 
@@ -732,7 +733,7 @@ def test_sequence_number_is_stored_and_formatted_as_text():
                     quotation_number="TEST/001",
                     client_name="Test Client",
                     project_name="Test Project",
-                    items=[QuotationItem(sr=1, description="Item", quantity=1, unit="m2")],
+                    items=[QuotationItem(sr="1", description="Item", quantity=1, unit="m2")],
                 ),
             )
         ]

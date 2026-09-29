@@ -7,6 +7,7 @@ import {
   quotationDraftReducer,
 } from './quotationDraft'
 import type { QuotationPreview } from '../types/quotation'
+import type { QuotationDraftState } from './quotationDraft'
 
 function preview(): QuotationPreview {
   return {
@@ -15,9 +16,9 @@ function preview(): QuotationPreview {
       client_name: 'ACME',
       project_name: null,
       items: [
-        { sr: 1, description: 'flooring', quantity: 30, unit: 'm2' },
-        { sr: 2, description: '', quantity: null, unit: 'm2' },
-        { sr: 3, description: 'skirting', quantity: 5, unit: 'm' },
+        { sr: '1', description: 'flooring', quantity: 30, unit: 'm2' },
+        { sr: '2', description: '', quantity: null, unit: 'm2' },
+        { sr: '3', description: 'skirting', quantity: 5, unit: 'm' },
       ],
     },
     review: [
@@ -90,7 +91,7 @@ describe('quotationDraft', () => {
 
     const items = state.preview.quotation.items
     expect(items).toHaveLength(4)
-    expect(items[3]).toEqual({ sr: 4, description: '', quantity: null, unit: null })
+    expect(items[3]).toEqual({ sr: '4', description: '', quantity: null, unit: null })
   })
 
   it('removes a line item', () => {
@@ -132,6 +133,90 @@ describe('quotationDraft', () => {
     expect(state.preview.quotation).not.toHaveProperty('installation_schedule')
     expect(state.preview.quotation).not.toHaveProperty('start_date')
     expect(state.preview.quotation).not.toHaveProperty('status')
+  })
+})
+
+/**
+ * AGENTS.md section 6 and the backend contract: the SR# is an ERP identifier, so
+ * it is text all the way through. Reading it as a number would rewrite "1.130" as
+ * "1.13" and "7.90" as "7.9", which are different identifiers in the ERP.
+ */
+describe('the SR# is kept as the text the ERP printed', () => {
+  function hierarchicalPreview(srs: string[]): QuotationDraftState {
+    return createDraft({
+      ...preview(),
+      quotation: {
+        ...preview().quotation,
+        items: srs.map((sr, position) => ({
+          sr,
+          description: `item ${position}`,
+          quantity: 1,
+          unit: 'm2',
+        })),
+      },
+    })
+  }
+
+  it.each(['1.1', '1.130', '7.90', '9.133'])('a parsed %s is stored unchanged', (sr) => {
+    const state = hierarchicalPreview([sr])
+
+    expect(state.preview.quotation.items[0].sr).toBe(sr)
+  })
+
+  it('keeps a hierarchical list in the order and spelling it arrived in', () => {
+    const srs = ['1.1', '1.130', '7.90', '9.133']
+
+    const state = hierarchicalPreview(srs)
+
+    expect(state.preview.quotation.items.map((item) => item.sr)).toEqual(srs)
+  })
+
+  it('editing an SR# does not read it as a number', () => {
+    // "1.130" typed back into the box must stay "1.130", not become 1.13.
+    const before = hierarchicalPreview(['1.1'])
+
+    const state = quotationDraftReducer(before, {
+      type: 'item/set',
+      index: 0,
+      field: 'sr',
+      value: '1.130',
+    })
+
+    expect(state.preview.quotation.items[0].sr).toBe('1.130')
+  })
+
+  it('keeps a trailing zero that a leading one would lose', () => {
+    const before = hierarchicalPreview(['1'])
+
+    const state = quotationDraftReducer(before, {
+      type: 'item/set',
+      index: 0,
+      field: 'sr',
+      value: '007.90',
+    })
+
+    expect(state.preview.quotation.items[0].sr).toBe('007.90')
+  })
+
+  it('stores a manually added SR# as text, numbered exactly as before', () => {
+    const state = reduce([{ type: 'item/add' }])
+
+    const added = state.preview.quotation.items.at(-1)
+    expect(added?.sr).toBe('4')
+    expect(typeof added?.sr).toBe('string')
+  })
+
+  it('stores an empty SR# as null rather than as an empty string', () => {
+    const state = reduce([{ type: 'item/set', index: 0, field: 'sr', value: '' }])
+
+    expect(state.preview.quotation.items[0].sr).toBeNull()
+  })
+
+  it('leaves quantity alone: it is still a number', () => {
+    const state = reduce([{ type: 'item/set', index: 0, field: 'quantity', value: '7.5' }])
+
+    expect(state.preview.quotation.items[0].quantity).toBe(7.5)
+    expect(typeof state.preview.quotation.items[0].quantity).toBe('number')
   })
 })
 

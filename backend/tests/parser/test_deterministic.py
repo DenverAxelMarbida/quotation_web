@@ -50,7 +50,7 @@ def test_reads_header_fields() -> None:
 def test_reads_every_line_item_in_order() -> None:
     result = parse(reference_pdf())
 
-    assert [item.sr for item in result.quotation.items] == [1, 2, 3]
+    assert [item.sr for item in result.quotation.items] == ["1", "2", "3"]
 
 
 @pytest.mark.parametrize(

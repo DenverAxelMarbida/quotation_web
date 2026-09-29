@@ -28,7 +28,7 @@ def test_the_real_quotation_reads_its_header() -> None:
 def test_the_real_quotation_reads_all_three_items() -> None:
     result = parse.parse(extract.extract(load_reference_quotation()))
 
-    assert [item.sr for item in result.quotation.items] == [1, 2, 3]
+    assert [item.sr for item in result.quotation.items] == ["1", "2", "3"]
     assert [item.unit for item in result.quotation.items] == ["m2", "m2", "m2"]
 
 

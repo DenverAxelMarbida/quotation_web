@@ -63,6 +63,20 @@ function toQuantity(value: string | number | null): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+/**
+ * Keep a field as the text that was typed.
+ *
+ * Used for the fields that are identifiers rather than measurements, so an
+ * ERP code or an SR# like "1.130" is stored exactly as entered. Reading one as
+ * a number would drop its trailing zeros. Quantity is the opposite case and
+ * goes through `toQuantity`.
+ */
+function toText(value: string | number | null): string | null {
+  if (value === null) return null
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : null
+  return value === '' ? null : value
+}
+
 function setItemField(item: QuotationItem, field: ItemField, value: string | number | null): QuotationItem {
   switch (field) {
     case 'description':
@@ -70,7 +84,8 @@ function setItemField(item: QuotationItem, field: ItemField, value: string | num
     case 'unit':
       return { ...item, unit: value === null || value === '' ? null : String(value) }
     case 'sr':
-      return { ...item, sr: toQuantity(value) }
+      // The SR# is an ERP identifier, so it is kept as the text that was typed.
+      return { ...item, sr: toText(value) }
     case 'quantity':
       return { ...item, quantity: toQuantity(value) }
   }
@@ -183,7 +198,10 @@ export function quotationDraftReducer(
     }
 
     case 'item/add': {
-      const nextSr = preview.quotation.items.length + 1
+      // The new row is still numbered the way it always was, by position; only
+      // the way it is stored changes, from a number to the text the SR# field
+      // holds everywhere else.
+      const nextSr = String(preview.quotation.items.length + 1)
       const blank: QuotationItem = { sr: nextSr, description: '', quantity: null, unit: null }
       return {
         preview: {

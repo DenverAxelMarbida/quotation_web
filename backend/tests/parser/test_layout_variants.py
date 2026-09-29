@@ -52,7 +52,7 @@ def test_a_combined_qty_unit_header_is_recognised_as_the_item_table() -> None:
     result = parse(combined_qty_unit_pdf())
 
     assert len(result.quotation.items) == 2
-    assert [item.sr for item in result.quotation.items] == [1, 2]
+    assert [item.sr for item in result.quotation.items] == ["1", "2"]
     assert not flags_for(result, "items")
 
 
@@ -117,7 +117,7 @@ def test_a_table_that_continues_onto_the_next_page_is_read_in_full() -> None:
     # from page 1. Without that the page returned nothing and item 4 was lost.
     result = parse(continuation_pdf())
 
-    assert [item.sr for item in result.quotation.items] == [1, 2, 3, 4]
+    assert [item.sr for item in result.quotation.items] == ["1", "2", "3", "4"]
 
 
 def test_the_continuation_page_reads_quantities_and_units_from_the_same_columns() -> None:
@@ -145,7 +145,7 @@ def test_a_grid_whose_columns_do_not_match_is_not_read_as_a_continuation() -> No
     # any ruled content that happened to follow the table.
     result = parse(mismatched_columns_pdf())
 
-    assert [item.sr for item in result.quotation.items] == [1, 2, 3]
+    assert [item.sr for item in result.quotation.items] == ["1", "2", "3"]
     assert "Some unrelated ruled content" not in " ".join(
         item.description for item in result.quotation.items
     )
@@ -213,6 +213,6 @@ def test_a_layout_without_a_discount_or_net_price_column_reads_without_flags() -
     result = parse(six_column_pdf())
 
     assert [(item.sr, item.quantity, item.unit) for item in result.quotation.items] == [
-        (1, 46.0, "m2")
+        ("1", 46.0, "m2")
     ]
     assert not [flag for flag in result.review if flag.reason is ReviewReason.INCONSISTENT]

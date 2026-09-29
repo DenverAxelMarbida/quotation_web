@@ -21,9 +21,11 @@ class QuotationItem(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    sr: int | None = Field(
+    sr: str | None = Field(
         default=None,
-        description="SR# line number as printed in the quotation. None when not legible.",
+        description="SR# line number exactly as printed in the quotation, kept as text because it "
+        "is an ERP identifier rather than a quantity: hierarchical numbers such as '1.1' or "
+        "'9.133' keep their trailing zeros ('1.130' stays '1.130'). None when not legible.",
     )
     description: str = Field(
         default="",

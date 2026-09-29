@@ -63,7 +63,10 @@ const ITEM_FIELDS: {
   numeric: boolean
   align?: 'align-center' | 'align-right'
 }[] = [
-  { field: 'sr', label: 'SR#', name: 'SR#', numeric: true, align: 'align-center' },
+  // The SR# is an identifier, not a measurement, so its box takes text: a
+  // number input would let the browser rewrite what was typed, and "007" or
+  // "1.130" would come back altered.
+  { field: 'sr', label: 'SR#', name: 'SR#', numeric: false, align: 'align-center' },
   { field: 'description', label: 'Description', name: 'description', numeric: false },
   { field: 'quantity', label: 'Quantity', name: 'quantity', numeric: true, align: 'align-right' },
   { field: 'unit', label: 'Unit', name: 'unit', numeric: false, align: 'align-center' },

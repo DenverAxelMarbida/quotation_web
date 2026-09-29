@@ -35,8 +35,8 @@ function alpagoPreview(): QuotationPreview {
       client_name: 'ALPAGO DESIGN AND BUILD CONTRACTING L.L.C S.O.C',
       project_name: null,
       items: [
-        { sr: 1, description: 'Vinyl flooring sheet 2mm', quantity: 200, unit: 'm2' },
-        { sr: 2, description: 'Self-levelling compound', quantity: 200, unit: 'm2' },
+        { sr: '1', description: 'Vinyl flooring sheet 2mm', quantity: 200, unit: 'm2' },
+        { sr: '2', description: 'Self-levelling compound', quantity: 200, unit: 'm2' },
       ],
     },
     review: [{ field: 'project_name', reason: 'missing', message: PROJECT_FLAG }],
@@ -52,9 +52,9 @@ function referencePreview(quotationNumber = 'QDXB/25/014094/Rev1'): QuotationPre
       client_name: 'ALPAGO DESIGN AND BUILD CONTRACTING L.L.C S.O.C',
       project_name: 'MBRC 466',
       items: [
-        { sr: 1, description: 'Engineered Oak Flooring 15/4 x 120 x 600mm', quantity: 34, unit: 'm2' },
-        { sr: 2, description: 'Engineered Oak Flooring 16/4 x 220 x RLmm', quantity: null, unit: 'm2' },
-        { sr: 3, description: 'Self-levelling up to 3mm', quantity: 122, unit: 'm2' },
+        { sr: '1', description: 'Engineered Oak Flooring 15/4 x 120 x 600mm', quantity: 34, unit: 'm2' },
+        { sr: '2', description: 'Engineered Oak Flooring 16/4 x 220 x RLmm', quantity: null, unit: 'm2' },
+        { sr: '3', description: 'Self-levelling up to 3mm', quantity: 122, unit: 'm2' },
       ],
     },
     review: [{ field: 'items[1].quantity', reason: 'missing', message: QUANTITY_FLAG }],
@@ -63,6 +63,28 @@ function referencePreview(quotationNumber = 'QDXB/25/014094/Rev1'): QuotationPre
       page_count: 2,
       warnings: [],
     },
+  }
+}
+
+/**
+ * A quotation whose ERP numbers its lines hierarchically, two of them ending in
+ * a zero. Read as numbers they would come back as 1.13 and 7.9.
+ */
+function hierarchicalPreview(): QuotationPreview {
+  return {
+    quotation: {
+      quotation_number: 'QDXB/25/012375/Rev9',
+      client_name: 'D B B CONTRACTING L.L.C.',
+      project_name: 'Serenity Mansions - Tilal al ghaf',
+      items: [
+        { sr: '1.1', description: 'WF-01AR Engineered Walnut flooring', quantity: 5082, unit: 'm2' },
+        { sr: '1.130', description: 'WF-03 AR Threshold', quantity: 2904, unit: 'm2' },
+        { sr: '7.90', description: 'Skirting for WF-101 U', quantity: 3960, unit: 'L.M.' },
+        { sr: '9.133', description: 'Self Levelling up to 2-3mm', quantity: 31547, unit: 'm2' },
+      ],
+    },
+    review: [],
+    source: { filename: 'borderless-quotation.pdf', page_count: 8, warnings: [] },
   }
 }
 
@@ -1278,6 +1300,71 @@ describe('quotation-added feedback', () => {
     chooseAndRead(pdfFile('second.pdf'))
     await reviewScreen()
     expect(screen.queryByText(/quotation added to session/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('the SR# is treated as an identifier, not a number', () => {
+  it('shows the hierarchical SR# exactly as the ERP printed it', async () => {
+    parse.mockResolvedValueOnce(hierarchicalPreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    // The trailing zeros are part of the identifier, so the boxes show the text.
+    expect(screen.getByLabelText('Line 1 SR#')).toHaveValue('1.1')
+    expect(screen.getByLabelText('Line 2 SR#')).toHaveValue('1.130')
+    expect(screen.getByLabelText('Line 3 SR#')).toHaveValue('7.90')
+    expect(screen.getByLabelText('Line 4 SR#')).toHaveValue('9.133')
+  })
+
+  it('does not let the browser reinterpret a typed SR#', async () => {
+    parse.mockResolvedValueOnce(hierarchicalPreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    const sr = screen.getByLabelText('Line 2 SR#')
+
+    // A number box would strip this back to 7.9 and 007 to 7.
+    fireEvent.change(sr, { target: { value: '007.90' } })
+
+    expect(screen.getByLabelText('Line 2 SR#')).toHaveValue('007.90')
+  })
+
+  it('sends the SR# to the backend as text', async () => {
+    parse.mockResolvedValueOnce(hierarchicalPreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    genConsolidated.mockResolvedValueOnce(new Blob(['mock']))
+    fireEvent.click(screen.getByRole('button', { name: /generate consolidated workbook/i }))
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+
+    const sent = genConsolidated.mock.calls[0][0].quotations[0].quotation.items.map(
+      (item) => item.sr,
+    )
+    // {"sr": "1.130"}, not {"sr": 1.13}: the payload is what the backend reads.
+    expect(sent).toEqual(['1.1', '1.130', '7.90', '9.133'])
+    expect(sent.every((sr) => typeof sr === 'string')).toBe(true)
+  })
+
+  it('still treats quantity as a number', async () => {
+    parse.mockResolvedValueOnce(hierarchicalPreview())
+    render(<App />)
+
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+
+    expect(screen.getByLabelText('Line 1 quantity')).toHaveValue(5082)
+    fireEvent.change(screen.getByLabelText('Line 1 quantity'), { target: { value: '7.5' } })
+    expect(screen.getByLabelText('Line 1 quantity')).toHaveValue(7.5)
   })
 })
 

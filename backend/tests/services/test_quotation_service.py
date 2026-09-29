@@ -43,7 +43,7 @@ class StubParser:
                 quotation_number="STUB-1",
                 client_name="STUB CLIENT",
                 project_name=None,
-                items=[QuotationItem(sr=1, description="stub", quantity=1.0, unit="m2")],
+                items=[QuotationItem(sr="1", description="stub", quantity=1.0, unit="m2")],
             ),
             review=[
                 ReviewFlag(
