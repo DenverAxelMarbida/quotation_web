@@ -21,7 +21,12 @@ import {
 import CompletedScreen from './screens/CompletedScreen'
 import ReviewScreen from './screens/ReviewScreen'
 import UploadScreen, { type UploadError } from './screens/UploadScreen'
-import { createMonitorDraft, monitorDraftReducer } from './state/monitorDraft'
+import { buildConsolidatedRequest } from './state/consolidatedRequest'
+import {
+  createMonitorDraft,
+  hasUnsavedChanges,
+  monitorDraftReducer,
+} from './state/monitorDraft'
 import {
   findDuplicateFingerprint,
   findDuplicateQuotationNumber,
@@ -33,7 +38,6 @@ import {
 import type { ImportedMonitor } from './types/monitor'
 import type {
   ConfirmedQuotation,
-  ConsolidatedWorkbookRequest,
   Quotation,
   QuotationPreview,
 } from './types/quotation'
@@ -117,8 +121,13 @@ export default function App() {
    * The monitoring workbook the user opened, and why the last attempt failed.
    *
    * Deliberately not part of `confirmedQuotations`: opening a workbook only reads
-   * it. The rows are shown so the user can see what the file holds, and they take
-   * no part in the session until a later phase says what should happen to them.
+   * it. Its rows are shown so the user can see what the file holds, and they never
+   * become quotations or join the session's numbering.
+   *
+   * Not the source for generation either. `monitorDraft.saved` is, because that is
+   * the set the user has confirmed; this is what the file held before she touched
+   * anything. It is still needed for the sequence baseline below, which is
+   * identity rather than content.
    */
   const [importedMonitor, setImportedMonitor] = useState<ImportedMonitor | null>(null)
   const [monitorError, setMonitorError] = useState<UploadError | null>(null)
@@ -274,18 +283,31 @@ export default function App() {
 
   async function generateConsolidatedWorkbook() {
     if (pending) return
+
+    // The Generate button lives on the upload screen, so it can be pressed while
+    // the monitor editor still holds an edit the user has not confirmed.
+    // Generating now would write a file that quietly leaves that edit out, and
+    // the user would have no way of telling -- so the request is refused and she
+    // is told which of the two actions settles it. Nothing is auto-saved and
+    // `monitorDraft.rows` is never exported, because an edit she has not
+    // confirmed is not hers yet to put in a file.
+    if (hasUnsavedChanges(monitorDraft)) {
+      setExcelError(
+        'Save or cancel your monitor changes before generating the workbook.',
+      )
+      return
+    }
+
     setPending(true)
     setPendingAction('generating')
     setExcelError(null)
     setExcelBlob(null)
     try {
-      // Strip app-only fields: the backend model forbids unknown properties.
-      const request: ConsolidatedWorkbookRequest = {
-        quotations: confirmedQuotations.map(({ sequence_number, quotation }) => ({
-          sequence_number,
-          quotation,
-        })),
-      }
+      // `saved` is the authoritative set of existing rows: the last state the
+      // user confirmed. `rows` is the working copy being edited, and
+      // `importedMonitor.rows` is what the file held before she touched anything.
+      // The two drafts are deliberately not merged or concatenated.
+      const request = buildConsolidatedRequest(confirmedQuotations, monitorDraft.saved)
       const blob = await generateConsolidatedExcel(request)
       setExcelBlob(blob)
       setStage('completed')

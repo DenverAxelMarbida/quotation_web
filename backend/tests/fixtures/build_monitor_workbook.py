@@ -17,6 +17,7 @@ from io import BytesIO
 from openpyxl import Workbook
 
 from app.excel.openpyxl_generator import OpenpyxlWorkbookGenerator
+from app.models.monitor import ImportedMonitorRow
 from app.models.quotation import Quotation, QuotationItem
 from app.models.workbook import ConfirmedQuotation, ConsolidatedWorkbookRequest
 
@@ -69,6 +70,57 @@ def generated_monitoring_workbook() -> bytes:
                 ),
             ),
         ]
+    )
+    return OpenpyxlWorkbookGenerator().generate_consolidated(request)
+
+
+def combined_monitoring_workbook() -> bytes:
+    """A workbook built from an existing monitoring file plus a new quotation.
+
+    The situation this reproduces is the one the feature exists for. The user
+    opens the monitoring workbook they already share, which by now has a
+    schedule, a date and a status filled in by hand, and then adds a new
+    quotation to that same file. Generating it has to produce that file with the
+    new quotation underneath, not a replacement holding only the quotation.
+
+    The existing rows are written in an order that is not numeric -- 007 before
+    003 -- so a round trip that quietly sorted them would not pass.
+    """
+    request = ConsolidatedWorkbookRequest(
+        existing_rows=[
+            ImportedMonitorRow(
+                sequence_number="007",
+                client_name="SAMPLE CLIENT TRADING L.L.C",
+                project_name="MARINA BAY TOWER",
+                product_description="Sample skirting profile",
+                quantity=18.0,
+                unit_of_measurement="L.M.",
+                installation_schedule="15-20 Nov 2026",
+                start_date="2026-11-15",
+                status="Ongoing",
+            ),
+            ImportedMonitorRow(
+                sequence_number="003",
+                client_name="SAMPLE CLIENT TRADING L.L.C",
+                project_name="MBRC 466",
+                product_description="Sample threshold strip",
+                quantity=6.0,
+                unit_of_measurement="L.M.",
+                installation_schedule="",
+                start_date=None,
+                status="On Hold",
+            ),
+        ],
+        quotations=[
+            ConfirmedQuotation(
+                sequence_number="008",
+                quotation=_quotation(
+                    "SAMPLE CLIENT TRADING L.L.C",
+                    "CREEK VILLA",
+                    [("1.1", "Sample engineered oak flooring", 34.0, "m2")],
+                ),
+            )
+        ],
     )
     return OpenpyxlWorkbookGenerator().generate_consolidated(request)
 
@@ -147,6 +199,7 @@ def truncated_workbook_bytes() -> bytes:
 
 __all__ = [
     "SUMMARY_COLUMNS",
+    "combined_monitoring_workbook",
     "damaged_workbook_bytes",
     "generated_monitoring_workbook",
     "row",

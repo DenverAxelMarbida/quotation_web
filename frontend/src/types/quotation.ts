@@ -7,7 +7,14 @@
  *
  * Nothing here models sequence number, installation schedule, start date or
  * status. Those are human-controlled and never extracted (AGENTS.md section 6).
+ *
+ * `ImportedMonitorRow` is imported from `./monitor` rather than restated here.
+ * A monitoring row is read back from a file the user already maintains, so its
+ * shape is the same one the editor, the importer and the backend all use, and a
+ * second copy here could drift from them.
  */
+
+import type { ImportedMonitorRow } from './monitor'
 
 export type QuotationItem = {
   /**
@@ -82,7 +89,19 @@ export type ConfirmedQuotation = {
   source?: SourceInfo
 }
 
-/** Request to generate a consolidated Excel workbook from multiple quotations. */
+/**
+ * Request to generate a consolidated Excel workbook.
+ *
+ * Two kinds of row travel together, in separate fields. `quotations` are the
+ * ones added in this session, each still to be unpacked into Excel rows.
+ * `existing_rows` are the Summary rows of a monitoring workbook the user
+ * already opened, which are already finished and are written out as they stand.
+ *
+ * Both mirror `ConsolidatedWorkbookRequest` in `backend/app/models/workbook.py`.
+ * `existing_rows` is optional here only because a caller may omit it; it is
+ * always sent as a list, empty when no workbook has been opened.
+ */
 export type ConsolidatedWorkbookRequest = {
   quotations: ConfirmedQuotation[]
+  existing_rows?: ImportedMonitorRow[]
 }

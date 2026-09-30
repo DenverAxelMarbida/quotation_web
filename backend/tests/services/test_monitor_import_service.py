@@ -28,6 +28,7 @@ from app.services.errors import (
 from app.services.monitor_import_service import MonitorImportService
 from tests.fixtures.build_monitor_workbook import (
     SUMMARY_COLUMNS,
+    combined_monitoring_workbook,
     damaged_workbook_bytes,
     generated_monitoring_workbook,
     row,
@@ -46,6 +47,59 @@ def test_a_generated_monitoring_workbook_imports() -> None:
     assert monitor.source_filename == "monitoring_sheet.xlsx"
     assert monitor.row_count == 3
     assert [item.sequence_number for item in monitor.rows] == ["001", "001", "002"]
+
+
+def test_a_workbook_built_from_an_existing_file_imports() -> None:
+    # The round trip for the workflow this feature enables. The user opens the
+    # monitoring workbook they already share, adds a quotation to it and downloads
+    # the result. That file has to read back as one sheet: the rows they were
+    # maintaining, then the new quotation, in that order.
+    monitor = service.import_monitor(combined_monitoring_workbook(), "monitoring_sheet.xlsx")
+
+    assert monitor.row_count == 3
+    assert [item.sequence_number for item in monitor.rows] == ["007", "003", "008"]
+
+
+def test_an_existing_row_keeps_its_operational_fields_across_the_round_trip() -> None:
+    # The whole point of writing the existing rows out unchanged. A schedule, a
+    # date and a status the user set by hand in Excel must survive being taken
+    # out and put back, or the file they share loses their own work.
+    monitor = service.import_monitor(combined_monitoring_workbook(), "monitoring_sheet.xlsx")
+
+    carried = monitor.rows[0]
+    assert carried.client_name == "SAMPLE CLIENT TRADING L.L.C"
+    assert carried.project_name == "MARINA BAY TOWER"
+    assert carried.product_description == "Sample skirting profile"
+    assert carried.quantity == 18.0
+    assert carried.unit_of_measurement == "L.M."
+    assert carried.installation_schedule == "15-20 Nov 2026"
+    assert carried.start_date == "2026-11-15"
+    assert carried.status == "Ongoing"
+
+
+def test_a_new_quotation_is_appended_after_the_existing_rows() -> None:
+    monitor = service.import_monitor(combined_monitoring_workbook(), "monitoring_sheet.xlsx")
+
+    new = monitor.rows[2]
+    assert new.sequence_number == "008"
+    assert new.project_name == "CREEK VILLA"
+    assert new.product_description == "Sample engineered oak flooring"
+    assert new.quantity == 34.0
+    assert new.unit_of_measurement == "m2"
+    # A quotation never supplies these, so they stay empty for the user to fill
+    # in by hand (AGENTS.md section 6).
+    assert new.installation_schedule == ""
+    assert new.start_date is None
+    assert new.status == ""
+
+
+def test_the_highest_sequence_is_read_from_the_combined_workbook() -> None:
+    # Numbering continues from the whole file, so the new quotation's own number
+    # has to be visible to the import even though it is written by the generator
+    # rather than inherited from the file.
+    monitor = service.import_monitor(combined_monitoring_workbook(), "monitoring_sheet.xlsx")
+
+    assert monitor.highest_sequence == "008"
 
 
 def test_the_summary_sheet_is_required() -> None:

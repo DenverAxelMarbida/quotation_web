@@ -9,14 +9,17 @@ Verifies that the generator:
 - Uses correct sheet name and column order
 """
 
+import inspect
 import math
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from app.excel.openpyxl_generator import OpenpyxlWorkbookGenerator
+from app.models.monitor import ImportedMonitorRow
 from app.models.quotation import Quotation, QuotationItem
 from app.models.workbook import ConfirmedQuotation, ConsolidatedWorkbookRequest
 
@@ -769,3 +772,353 @@ def test_status_and_dates_remain_blank(sample_workbook):
     sheet = sample_workbook["Summary"]
     for col in (7, 8, 9):
         assert sheet.cell(row=2, column=col).value is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 5C-B1: a workbook the user already opened, plus new quotations.
+#
+# The mother keeps the monitoring file in OneDrive and comes back to it later.
+# Opening it shows the rows it holds, and a new quotation is then added to that
+# same file rather than starting a fresh one. So generation has to write both:
+# the rows that were already there, unchanged, and then the new ones.
+#
+# The two are deliberately not made to look alike. An existing row is a finished
+# Summary row the user owns; a quotation is a list of items that has to be
+# unpacked. Turning one into the other would invent a client, a project and a
+# blank status, so each is written from its own model and the two share only the
+# column list and the cell formatting.
+# ---------------------------------------------------------------------------
+
+
+def _existing(**overrides) -> ImportedMonitorRow:
+    """A row as the import service returns it, with every field spelled out."""
+    fields = {
+        "sequence_number": "001",
+        "client_name": "EXISTING CLIENT",
+        "project_name": "EXISTING PROJECT",
+        "product_description": "Existing product description",
+        "quantity": 12.5,
+        "unit_of_measurement": "m2",
+        "installation_schedule": "",
+        "start_date": None,
+        "status": "Ongoing",
+    }
+    fields.update(overrides)
+    return ImportedMonitorRow(**fields)
+
+
+def _combined(existing: list[ImportedMonitorRow], *pairs: tuple[str, Quotation]):
+    """A request holding existing rows and new quotations together."""
+    return ConsolidatedWorkbookRequest(
+        existing_rows=existing,
+        quotations=[ConfirmedQuotation(sequence_number=seq, quotation=q) for seq, q in pairs],
+    )
+
+
+def _sequences(sheet) -> list:
+    """The Sequence Number of every populated data row, top to bottom."""
+    return [sheet.cell(row=r, column=1).value for r in range(2, sheet.max_row + 1)]
+
+
+def test_existing_rows_are_written_before_new_quotations():
+    """The workbook reads in order: what was already there, then what is new."""
+    generator = OpenpyxlWorkbookGenerator()
+    request = _combined(
+        [
+            _existing(sequence_number="001", product_description="first"),
+            _existing(sequence_number="001", product_description="second"),
+            _existing(sequence_number="007", product_description="third"),
+        ],
+        ("008", _quotation("New Client", "New Project", [(1, "new-1", 4.0, "m2")])),
+    )
+
+    sheet = _summary(generator.generate_consolidated(request))
+
+    assert sheet.max_row == 5
+    assert _sequences(sheet) == ["001", "001", "007", "008"]
+    assert [sheet.cell(row=r, column=4).value for r in range(2, 6)] == [
+        "first",
+        "second",
+        "third",
+        "new-1",
+    ]
+
+
+def test_existing_rows_keep_the_order_they_were_found_in():
+    """No sorting. The workbook's own row order is the user's own arrangement."""
+    generator = OpenpyxlWorkbookGenerator()
+    # Deliberately not in numeric order, which is the only way to tell a
+    # preserved order apart from a sorted one.
+    request = _combined(
+        [_existing(sequence_number=seq) for seq in ("007", "002", "001")],
+        ("008", _quotation("New", "P", [(1, "new", 1.0, "m2")])),
+    )
+
+    sheet = _summary(generator.generate_consolidated(request))
+
+    assert _sequences(sheet) == ["007", "002", "001", "008"]
+
+
+def test_an_existing_row_preserves_all_nine_fields():
+    """Nothing is normalised, inferred or dropped on the way back out."""
+    generator = OpenpyxlWorkbookGenerator()
+    request = _combined(
+        [
+            _existing(
+                sequence_number="007",
+                client_name="EXISTING CLIENT",
+                project_name="EXISTING PROJECT",
+                product_description="Existing product description",
+                quantity=12.5,
+                unit_of_measurement="m2",
+                installation_schedule="15-20 Nov 2026",
+                start_date="to be agreed",
+                status="Ongoing",
+            )
+        ],
+        ("008", _quotation("New", "P", [(1, "new", 1.0, "m2")])),
+    )
+
+    sheet = _summary(generator.generate_consolidated(request))
+
+    assert [sheet.cell(row=2, column=c).value for c in range(1, 10)] == [
+        "007",
+        "EXISTING CLIENT",
+        "EXISTING PROJECT",
+        "Existing product description",
+        12.5,
+        "m2",
+        "15-20 Nov 2026",
+        "to be agreed",
+        "Ongoing",
+    ]
+
+
+def test_an_existing_sequence_number_stays_text_with_its_leading_zero():
+    """'007' is an identifier, so it must not come back as the number 7."""
+    generator = OpenpyxlWorkbookGenerator()
+    request = _combined(
+        [_existing(sequence_number="007")],
+        ("008", _quotation("N", "P", [(1, "n", 1.0, "m2")])),
+    )
+
+    cell = _summary(generator.generate_consolidated(request)).cell(row=2, column=1)
+
+    assert cell.value == "007"
+    assert isinstance(cell.value, str)
+    assert cell.number_format == "@"
+
+
+def test_an_existing_row_keeps_its_manual_fields_as_they_were():
+    """A schedule, a date and a status the user set are never second-guessed.
+
+    'to be agreed' is a phrase the user wrote, not a malformed date, so it is
+    written through untouched rather than blanked or reformatted.
+    """
+    generator = OpenpyxlWorkbookGenerator()
+    request = _combined(
+        [
+            _existing(
+                installation_schedule="15-20 Nov 2026",
+                start_date="to be agreed",
+                status="Completed",
+            )
+        ],
+        ("008", _quotation("New", "P", [(1, "new", 1.0, "m2")])),
+    )
+
+    sheet = _summary(generator.generate_consolidated(request))
+
+    assert sheet.cell(row=2, column=7).value == "15-20 Nov 2026"
+    assert sheet.cell(row=2, column=8).value == "to be agreed"
+    assert sheet.cell(row=2, column=9).value == "Completed"
+
+
+def test_a_blank_manual_field_on_an_existing_row_stays_blank():
+    """An empty cell round-trips as an empty cell, not as an invented value."""
+    generator = OpenpyxlWorkbookGenerator()
+    request = _combined(
+        [_existing(installation_schedule="", start_date=None, status="")],
+        ("008", _quotation("New", "P", [(1, "new", 1.0, "m2")])),
+    )
+
+    sheet = _summary(generator.generate_consolidated(request))
+
+    for col in (7, 8, 9):
+        assert sheet.cell(row=2, column=col).value in (None, "")
+
+
+def test_new_quotation_rows_still_leave_their_manual_fields_blank():
+    """The rule from AGENTS.md section 6 is unchanged by any of this.
+
+    A quotation is never a source for Installation Schedule, Start Date or
+    Status, so those cells stay empty for the user to fill in by hand.
+    """
+    generator = OpenpyxlWorkbookGenerator()
+    request = _combined(
+        [_existing(sequence_number="007")],
+        ("008", _quotation("New Client", "New Project", [(1, "new-1", 1.0, "m2")])),
+    )
+
+    sheet = _summary(generator.generate_consolidated(request))
+
+    for col in (7, 8, 9):
+        assert sheet.cell(row=3, column=col).value is None
+
+
+def test_an_existing_row_with_a_long_description_gets_a_tall_row():
+    """A description read out of the workbook is wrapped and sized like any other.
+
+    Without this the row would use Excel's default height and the tail of a long
+    product description would be hidden, simply because the row came from the
+    imported side rather than from a quotation.
+    """
+    generator = OpenpyxlWorkbookGenerator()
+    description = "Engineered Oak Flooring " * 60
+    request = _combined(
+        [_existing(product_description=description)],
+        ("008", _quotation("New", "P", [(1, "new", 1.0, "m2")])),
+    )
+
+    sheet = _summary(generator.generate_consolidated(request))
+    cell = sheet.cell(row=2, column=4)
+
+    assert cell.value == description
+    assert cell.alignment.wrap_text is True
+    assert _lines_for(description) > 8
+    assert sheet.row_dimensions[2].height == (
+        OpenpyxlWorkbookGenerator.LINE_HEIGHT * _lines_for(description)
+    )
+
+
+def test_an_existing_row_with_a_short_description_keeps_the_default_row_height():
+    generator = OpenpyxlWorkbookGenerator()
+    request = _combined(
+        [_existing(product_description="Self-levelling up to 3mm")],
+        ("008", _quotation("New", "P", [(1, "new", 1.0, "m2")])),
+    )
+
+    sheet = _summary(generator.generate_consolidated(request))
+
+    assert sheet.row_dimensions[2].height is None
+
+
+def test_an_existing_row_is_formatted_like_a_quotation_row():
+    """One set of column rules, not one per source."""
+    generator = OpenpyxlWorkbookGenerator()
+    request = _combined(
+        [
+            _existing(
+                sequence_number="007",
+                product_description="Existing product description",
+                installation_schedule="15-20 Nov 2026",
+            )
+        ],
+        ("008", _quotation("New", "P", [(1, "new", 1.0, "m2")])),
+    )
+
+    sheet = _summary(generator.generate_consolidated(request))
+    existing = [sheet.cell(row=2, column=c) for c in range(1, 10)]
+    new = [sheet.cell(row=3, column=c) for c in range(1, 10)]
+
+    # Sequence Number: text format, centred, so the zeros survive.
+    assert existing[0].number_format == new[0].number_format == "@"
+    assert existing[0].alignment.horizontal == new[0].alignment.horizontal == "center"
+    # Product Description: wrapped, left and top aligned.
+    assert existing[3].alignment.wrap_text is True
+    assert existing[3].alignment.horizontal == new[3].alignment.horizontal == "left"
+    assert existing[3].alignment.vertical == new[3].alignment.vertical == "top"
+    # Quantity: centred.
+    assert existing[4].alignment.horizontal == new[4].alignment.horizontal == "center"
+    # Both date columns carry the agreed format whether or not they are set.
+    expected_date = OpenpyxlWorkbookGenerator.DATE_FORMAT
+    assert existing[6].number_format == existing[7].number_format == expected_date
+    assert new[6].number_format == new[7].number_format == expected_date
+
+
+def test_workbook_level_formatting_covers_existing_and_new_rows_together():
+    """One range for the whole file, not one per source.
+
+    Four existing rows and three quotation rows occupy rows 2 to 8, and the
+    dropdown, colours and filter reach all of them while still extending past
+    the data for rows the user adds by hand in Excel.
+    """
+    generator = OpenpyxlWorkbookGenerator()
+    request = _combined(
+        [_existing(sequence_number=f"00{n}") for n in (1, 2, 3, 4)],
+        (
+            "008",
+            _quotation("New", "P", [(1, "a", 1.0, "m2"), (2, "b", 2.0, "m2"), (3, "c", 3.0, "m2")]),
+        ),
+    )
+
+    sheet = _summary(generator.generate_consolidated(request))
+
+    assert sheet.max_row == 8
+    # The filter covers the header and every populated row, and no more.
+    assert sheet.auto_filter.ref == "A1:I8"
+    assert sheet.freeze_panes == "A2"
+
+    # The buffer below the data is still there, and creates no rows of its own.
+    buffered = sheet.max_row + OpenpyxlWorkbookGenerator.BUFFER_ROWS
+
+    status_rules = [dv for dv in sheet.data_validations.dataValidation if dv.type == "list"]
+    assert len(status_rules) == 1
+    assert str(status_rules[0].sqref) == f"I2:I{buffered}"
+
+    date_rules = [dv for dv in sheet.data_validations.dataValidation if dv.type == "date"]
+    assert len(date_rules) == 1
+    assert str(date_rules[0].sqref) == f"G2:H{buffered}"
+
+    # One rule per status, each covering the whole combined data range.
+    rules = _status_rules(sheet)
+    assert len(rules) == len(OpenpyxlWorkbookGenerator.STATUS_VALUES)
+    assert {sqref for sqref, _ in rules} == {f"A2:I{buffered}"}
+    # Those ranges must not have created cells: the data range stays exact.
+    assert sheet.max_row == 8
+
+
+def test_no_existing_rows_generates_exactly_what_it_did_before():
+    """With nothing imported, the workbook is the one this application always made."""
+    generator = OpenpyxlWorkbookGenerator()
+    request = _consolidated(("001", _quotation("Client", "Project", [(1, "item", 2.0, "m2")])))
+
+    # The field defaults to empty rather than being required.
+    assert request.existing_rows == []
+
+    sheet = _summary(generator.generate_consolidated(request))
+
+    assert sheet.max_row == 2
+    assert _sequences(sheet) == ["001"]
+    assert sheet.cell(row=2, column=4).value == "item"
+
+
+def test_the_generator_never_works_out_a_sequence_number():
+    """Sequence Numbers are written, never calculated.
+
+    Numbering belongs to the application, in one place. If the generator ever
+    began comparing, incrementing or tidying these strings, a dotted value could
+    reach an int() here the same way it once reached one in the import service,
+    and a workbook that reads perfectly well in Excel would be refused.
+
+    The check covers the code that writes a Sequence Number and the code that
+    decides row order. It deliberately stops before the layout helpers, which
+    legitimately do arithmetic on a column width.
+    """
+    module = Path(inspect.getfile(OpenpyxlWorkbookGenerator)).read_text(encoding="utf-8")
+    row_writing = module.split("def generate_consolidated", 1)[1]
+    row_writing = row_writing.split("def _format_data_cell", 1)[0]
+
+    for forbidden in ("int(", "float(", "max(", "min(", "sort(", "zfill", "rjust", "ljust"):
+        assert forbidden not in row_writing, f"the generator must not use {forbidden}"
+
+    # And the values it is handed are written through untouched, in the order it
+    # was given them: unsorted, unpadded, and with a value that would look
+    # out of order to anything trying to be clever with them.
+    request = _combined(
+        [_existing(sequence_number=s) for s in ("100", "009", "007")],
+        ("1000", _quotation("New", "P", [(1, "new", 1.0, "m2")])),
+    )
+    sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
+
+    assert _sequences(sheet) == ["100", "009", "007", "1000"]

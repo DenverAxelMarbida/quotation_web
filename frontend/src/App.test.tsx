@@ -1715,3 +1715,365 @@ describe('numbering continues from an imported monitor', () => {
     expect(within(monitorSection()).getAllByText('007')).not.toHaveLength(0)
   })
 })
+
+/**
+ * Phase 5C-B2: the workbook the user already opened goes into the generated file.
+ *
+ * The mother keeps the monitoring workbook in OneDrive and comes back to it later.
+ * Opening it shows the rows it holds, and a new quotation is then added to that
+ * same file rather than starting a fresh one. So the request carries both: the
+ * rows that were already there, and the new quotation.
+ *
+ * They travel in separate fields and are never merged, because they are not the
+ * same kind of thing. A monitoring row is a finished Summary row the user owns,
+ * complete with the schedule, date and status they set in Excel; a quotation is a
+ * list of items still to be unpacked. Folding one into the other would invent a
+ * client, a project and a blank status for every row being maintained.
+ *
+ * Which rows are authoritative is the question these tests answer. The saved rows
+ * are, and only they. The working copy being edited is not, so an edit the user
+ * has not confirmed must either be saved first or stop the generation outright --
+ * a workbook that quietly left it out would be a file the user believes they
+ * checked and has not.
+ */
+describe('adding a quotation to an existing monitoring workbook', () => {
+  function monitorRow(overrides: Partial<ImportedMonitorRow> = {}): ImportedMonitorRow {
+    return {
+      sequence_number: '001',
+      client_name: 'SAMPLE CLIENT TRADING L.L.C',
+      project_name: 'MBRC 466',
+      product_description: 'Engineered Oak Flooring 15/4 x 120 x 600mm',
+      quantity: 34,
+      unit_of_measurement: 'm2',
+      installation_schedule: '',
+      start_date: null,
+      status: 'Ongoing',
+      ...overrides,
+    }
+  }
+
+  /** The workbook the mother already shares: two rows, highest number 007. */
+  function existingWorkbook(): ImportedMonitor {
+    const rows = [
+      monitorRow({
+        sequence_number: '001',
+        product_description: 'Engineered Oak Flooring 15/4 x 120 x 600mm',
+        installation_schedule: '01-05 Sep 2026',
+        start_date: '2026-09-01',
+        status: 'Completed',
+      }),
+      monitorRow({
+        sequence_number: '007',
+        project_name: 'Marina Bay Tower',
+        product_description: 'Self-levelling up to 3mm',
+        quantity: 122,
+        installation_schedule: '15-20 Nov 2026',
+        start_date: '2026-11-15',
+        status: 'Ongoing',
+      }),
+    ]
+    return {
+      rows,
+      highest_sequence: '007',
+      row_count: rows.length,
+      source_filename: 'monitoring_sheet.xlsx',
+    }
+  }
+
+  function monitorSection() {
+    return screen.getByRole('region', { name: /continue existing monitor/i })
+  }
+
+  /** Opens a monitoring workbook and waits for it to be shown. */
+  async function openMonitor(monitor: ImportedMonitor = existingWorkbook()) {
+    monitorImport.mockResolvedValue(monitor)
+    render(<App />)
+    const file = new File([`xlsx::${Date.now()}::${Math.random()}`], 'monitoring_sheet.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    fireEvent.change(within(monitorSection()).getByLabelText('Monitoring Excel file'), {
+      target: { files: [file] },
+    })
+    fireEvent.click(within(monitorSection()).getByRole('button', { name: /upload monitor excel/i }))
+    await within(monitorSection()).findByText(/existing monitor loaded/i)
+  }
+
+  /** Reads a PDF, confirms it, and adds it to the session at 008. */
+  async function addQuotation(preview: QuotationPreview = referencePreview(), name = 'quote.pdf') {
+    parse.mockResolvedValueOnce(preview)
+    chooseAndRead(pdfFile(name))
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+  }
+
+  /** Opens the monitor editor, which is the only mode with inputs in it. */
+  async function openEditor() {
+    fireEvent.click(within(monitorSection()).getByRole('button', { name: /edit monitor/i }))
+    await waitFor(() =>
+      expect(
+        within(monitorSection()).getByRole('button', { name: /save changes/i }),
+      ).toBeInTheDocument(),
+    )
+  }
+
+  function type(rowNumber: number, name: string, value: string) {
+    fireEvent.change(within(monitorSection()).getByLabelText(`${name}, row ${rowNumber}`), {
+      target: { value },
+    })
+  }
+
+  function save() {
+    fireEvent.click(within(monitorSection()).getByRole('button', { name: /save changes/i }))
+  }
+
+  function cancelEdits() {
+    fireEvent.click(within(monitorSection()).getByRole('button', { name: /^cancel$/i }))
+  }
+
+  function generate() {
+    genConsolidated.mockResolvedValueOnce(new Blob(['mock']))
+    fireEvent.click(screen.getByRole('button', { name: /generate consolidated workbook/i }))
+  }
+
+  /**
+   * The `existing_rows` the backend was sent.
+   *
+   * The API function is typed with the wire contract, where the field is optional
+   * so a caller may omit it. This one must not: an absent field is the failure
+   * these tests exist to catch, so its presence is asserted rather than defaulted
+   * away with `?? []`, which would let that failure pass.
+   */
+  function sentExistingRows(): ImportedMonitorRow[] {
+    const request = genConsolidated.mock.calls[0][0]
+    expect(request).toHaveProperty('existing_rows')
+    expect(request.existing_rows).not.toBeUndefined()
+    return request.existing_rows as ImportedMonitorRow[]
+  }
+
+  it('sends the existing rows and the new quotation in one request', async () => {
+    await openMonitor()
+    await addQuotation()
+    generate()
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+
+    const request = genConsolidated.mock.calls[0][0]
+    expect(sentExistingRows().map((row) => row.sequence_number)).toEqual(['001', '007'])
+    expect(request.quotations.map((q: { sequence_number: string }) => q.sequence_number)).toEqual([
+      '008',
+    ])
+  })
+
+  it('sends the existing rows whole, including what the user filled in by hand', async () => {
+    await openMonitor()
+    await addQuotation()
+    generate()
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+
+    // A schedule, a date and a status set in Excel are the user's own work. If
+    // they were dropped, the file they share would lose them.
+    const [first, second] = sentExistingRows()
+    expect(first).toEqual(existingWorkbook().rows[0])
+    expect(second).toEqual(existingWorkbook().rows[1])
+    expect(second.installation_schedule).toBe('15-20 Nov 2026')
+    expect(second.status).toBe('Ongoing')
+  })
+
+  it('keeps a monitoring row out of the quotations', async () => {
+    await openMonitor()
+    await addQuotation()
+    generate()
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+
+    const { quotations } = genConsolidated.mock.calls[0][0]
+    expect(quotations).toHaveLength(1)
+    // The new quotation is the ERP one, not a row read from the workbook.
+    expect(quotations[0].sequence_number).toBe('008')
+    expect(quotations[0].quotation.client_name).toBe(
+      'ALPAGO DESIGN AND BUILD CONTRACTING L.L.C S.O.C',
+    )
+  })
+
+  it('does not list a monitoring row in the session of quotations', async () => {
+    await openMonitor()
+    await addQuotation()
+
+    // Opening a workbook only reads it. Its rows are not quotations and must not
+    // appear as though they had been added to this session.
+    const table = screen.getByRole('table', {
+      name: /quotations already added to this session/i,
+    })
+    expect(within(table).getAllByRole('row')).toHaveLength(2)
+    expect(within(table).getByRole('row', { name: /008/ })).toBeInTheDocument()
+    expect(within(table).queryByRole('row', { name: /001/ })).toBeNull()
+  })
+
+  it('sends a saved edit so a correction reaches the workbook', async () => {
+    await openMonitor()
+    await openEditor()
+    type(1, 'Client Name', 'CORRECTED CLIENT NAME')
+    save()
+    await addQuotation()
+    generate()
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+
+    expect(sentExistingRows()[0].client_name).toBe('CORRECTED CLIENT NAME')
+  })
+
+  it('sends the original value after an edit is cancelled', async () => {
+    await openMonitor()
+    await openEditor()
+    type(1, 'Client Name', 'DISCARDED EDIT')
+    cancelEdits()
+    await addQuotation()
+    generate()
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+
+    // Cancel returns to the last confirmed state, and that is what is sent. The
+    // file must not carry an edit she threw away.
+    expect(sentExistingRows()[0].client_name).toBe('SAMPLE CLIENT TRADING L.L.C')
+  })
+
+  it('refuses to generate while a monitor edit is unsaved', async () => {
+    // The Generate button sits on the upload screen, so it is reachable while the
+    // monitor editor is still open. Generating here would produce a file that
+    // silently omits the edit, and she would have no way of knowing.
+    await openMonitor()
+    await addQuotation()
+    await openEditor()
+    type(1, 'Client Name', 'UNSAVED EDIT')
+
+    generate()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(
+      'Save or cancel your monitor changes before generating the workbook.',
+    )
+    expect(genConsolidated).not.toHaveBeenCalled()
+  })
+
+  it('generates once the unsaved edit is saved', async () => {
+    await openMonitor()
+    await addQuotation()
+    await openEditor()
+    type(1, 'Client Name', 'SAVED EDIT')
+
+    // Guarded, so the save is what unblocks it.
+    generate()
+    await screen.findByRole('alert')
+    expect(genConsolidated).not.toHaveBeenCalled()
+
+    save()
+    generate()
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+    expect(sentExistingRows()[0].client_name).toBe('SAVED EDIT')
+  })
+
+  it('generates once the unsaved edit is cancelled', async () => {
+    await openMonitor()
+    await addQuotation()
+    await openEditor()
+    type(1, 'Client Name', 'DISCARDED EDIT')
+
+    generate()
+    await screen.findByRole('alert')
+    expect(genConsolidated).not.toHaveBeenCalled()
+
+    cancelEdits()
+    generate()
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+    expect(sentExistingRows()[0].client_name).toBe('SAMPLE CLIENT TRADING L.L.C')
+  })
+
+  it('does not let a second click through while the first is refused', async () => {
+    await openMonitor()
+    await addQuotation()
+    await openEditor()
+    type(1, 'Client Name', 'UNSAVED EDIT')
+
+    generate()
+    await screen.findByRole('alert')
+    generate()
+
+    expect(genConsolidated).not.toHaveBeenCalled()
+  })
+
+  it('preserves a leading zero on both the existing rows and the new quotation', async () => {
+    await openMonitor()
+    await addQuotation()
+    generate()
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+
+    const request = genConsolidated.mock.calls[0][0]
+    const rows = sentExistingRows()
+    // Read as numbers these would become 1, 7 and 8, quietly renumbering the file.
+    expect(rows.map((row) => row.sequence_number)).toEqual(['001', '007'])
+    expect(request.quotations[0].sequence_number).toBe('008')
+    rows.forEach((row) => expect(typeof row.sequence_number).toBe('string'))
+    expect(typeof request.quotations[0].sequence_number).toBe('string')
+  })
+
+  it('sends no app-only fields with the quotation', async () => {
+    await openMonitor()
+    await addQuotation()
+    generate()
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+
+    // The confirmed quotation carries a fingerprint and a source for this
+    // application's own duplicate check and session preview. The backend model
+    // forbids unknown properties, so they must not travel.
+    const request = genConsolidated.mock.calls[0][0]
+    expect(Object.keys(request.quotations[0]).sort()).toEqual(['quotation', 'sequence_number'])
+    expect(JSON.stringify(request)).not.toContain('fingerprint')
+  })
+})
+
+describe('generating without a monitoring workbook', () => {
+  it('sends an empty existing_rows list and leaves the quotation payload alone', async () => {
+    render(<App />)
+    parse.mockResolvedValueOnce(referencePreview())
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    genConsolidated.mockResolvedValueOnce(new Blob(['mock']))
+    fireEvent.click(screen.getByRole('button', { name: /generate consolidated workbook/i }))
+    await waitFor(() => expect(genConsolidated).toHaveBeenCalledTimes(1))
+
+    // No workbook has been opened, so the field is present and empty. Behaviour
+    // is otherwise exactly what it was before this field existed.
+    const request = genConsolidated.mock.calls[0][0]
+    expect(request).toHaveProperty('existing_rows')
+    expect(request.existing_rows).toEqual([])
+    expect(request.quotations).toHaveLength(1)
+    expect(request.quotations[0].sequence_number).toBe('001')
+    expect(request.quotations[0].quotation.client_name).toBe(
+      'ALPAGO DESIGN AND BUILD CONTRACTING L.L.C S.O.C',
+    )
+  })
+
+  it('does not block generation when no monitor has ever been opened', async () => {
+    // The guard must not fire on an empty draft. A session with no workbook at
+    // all is the common case and has nothing unsaved to lose.
+    render(<App />)
+    parse.mockResolvedValueOnce(referencePreview())
+    chooseAndRead(pdfFile())
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    await sequenceScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    genConsolidated.mockResolvedValueOnce(new Blob(['mock']))
+    fireEvent.click(screen.getByRole('button', { name: /generate consolidated workbook/i }))
+
+    await screen.findByRole('heading', { name: /excel file generated/i })
+    expect(genConsolidated).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
