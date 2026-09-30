@@ -584,6 +584,45 @@ td input:not([type='number']) {
   white-space: nowrap;
 }
 
+/* Continue Existing Monitor. Kept visually separate from the quotation form
+   above it: it is a different task, and a user reading the page should not
+   mistake a workbook for a quotation PDF. */
+
+.monitor-import {
+  margin-top: 1.5rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid #d7dce2;
+  border-top: 3px solid #4a5568;
+  border-radius: 8px;
+  background: #f7f9fb;
+}
+
+.monitor-import > h3 {
+  margin-top: 0;
+}
+
+.monitor-preview {
+  margin-top: 1.25rem;
+}
+
+.monitor-table {
+  min-width: 56rem;
+  background: #fff;
+}
+
+/* The preview is a record of what the file holds, so it should read as settled
+   rather than as another step the user still has to act on. */
+.monitor-table td {
+  color: #2d3748;
+}
+
+.monitor-import .notice--success {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.5rem;
+}
+
 /* Responsive */
 
 @media (max-width: 640px) {

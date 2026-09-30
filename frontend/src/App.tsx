@@ -13,6 +13,7 @@
 
 import { useState } from 'react'
 import { ApiError } from './api/client'
+import { importMonitor } from './api/monitor'
 import {
   generateConsolidatedExcel,
   parseQuotation,
@@ -27,6 +28,7 @@ import {
   fingerprintFile,
   nextSequenceNumber,
 } from './state/session'
+import type { ImportedMonitor } from './types/monitor'
 import type {
   ConfirmedQuotation,
   ConsolidatedWorkbookRequest,
@@ -68,6 +70,22 @@ function toUploadError(cause: unknown): UploadError {
   }
 }
 
+/**
+ * The same, for a monitoring workbook.
+ *
+ * A network failure is the one case the user cannot act on by fixing the file, so
+ * it names the backend rather than the workbook they chose.
+ */
+function toMonitorError(cause: unknown): UploadError {
+  if (cause instanceof ApiError) {
+    return { message: cause.message, detail: cause.detail }
+  }
+  return {
+    message: 'The monitoring file could not be read. Check that the backend is running, then try again.',
+    detail: null,
+  }
+}
+
 export default function App() {
   const [stage, setStage] = useState<Stage>('upload')
   const [preview, setPreview] = useState<QuotationPreview | null>(null)
@@ -93,6 +111,16 @@ export default function App() {
    * workbook has not been generated at this point.
    */
   const [lastAddedSequence, setLastAddedSequence] = useState<string | null>(null)
+  /**
+   * The monitoring workbook the user opened, and why the last attempt failed.
+   *
+   * Deliberately not part of `confirmedQuotations`: opening a workbook only reads
+   * it. The rows are shown so the user can see what the file holds, and they take
+   * no part in the session until a later phase says what should happen to them.
+   */
+  const [importedMonitor, setImportedMonitor] = useState<ImportedMonitor | null>(null)
+  const [monitorError, setMonitorError] = useState<UploadError | null>(null)
+  const [monitorPending, setMonitorPending] = useState(false)
 
   /**
    * `useQuotationDraft` seeds its reducer on mount, so a second upload needs a
@@ -150,6 +178,30 @@ export default function App() {
   function handleReviewConfirm(_quotation: Quotation) {
     // Move to the sequence step; nothing is committed yet.
     setStage('review-with-sequence')
+  }
+
+  /**
+   * Open a monitoring workbook the user already has, and show what it holds.
+   *
+   * This only reads. It shares none of the quotation workflow's state on purpose:
+   * the sequence numbers the session hands out, its duplicate checks and its
+   * confirmed quotations are all unaffected, because a workbook that was merely
+   * opened has not joined the session.
+   */
+  async function readMonitor(file: File) {
+    if (monitorPending) return
+    setMonitorPending(true)
+    setMonitorError(null)
+    try {
+      setImportedMonitor(await importMonitor(file))
+    } catch (cause) {
+      // A failed read must not leave an earlier workbook on screen next to the
+      // new error, or the user would read the message against the wrong rows.
+      setImportedMonitor(null)
+      setMonitorError(toMonitorError(cause))
+    } finally {
+      setMonitorPending(false)
+    }
   }
 
   function handleSequenceConfirm(quotation: Quotation) {
@@ -288,6 +340,11 @@ export default function App() {
           onGenerateWorkbook={generateConsolidatedWorkbook}
           generationError={excelError}
           addedSequence={lastAddedSequence}
+          importedMonitor={importedMonitor}
+          monitorPending={monitorPending}
+          monitorError={monitorError}
+          onImportMonitor={readMonitor}
+          onClearMonitorError={() => setMonitorError(null)}
         />
       )}
 

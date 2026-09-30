@@ -4,10 +4,17 @@
  * Holds only what belongs to the form: the chosen file and a client-side check
  * that it is a PDF at all. Everything after that is the backend's job, and its
  * answers are passed in.
+ *
+ * The "Continue Existing Monitor" section lives at the bottom, below everything
+ * about starting a new quotation, and is kept out of the `<form>` so choosing a
+ * workbook can never be submitted as a quotation PDF. The two are independent:
+ * the screen offers both, and neither disturbs the other.
  */
 
 import { useId, useState, type ChangeEvent, type FormEvent } from 'react'
 import type { ConfirmedQuotation } from '../types/quotation'
+import type { ImportedMonitor } from '../types/monitor'
+import MonitorImportSection from './MonitorImportSection'
 import ProcessingScreen from './ProcessingScreen'
 
 /** A failure worth showing a non-technical user, in their language. */
@@ -32,6 +39,14 @@ type Props = {
    * workbook has not been generated, so this never mentions it being written.
    */
   addedSequence?: string | null
+  /** The monitoring workbook that was opened, shown as a read-only preview. */
+  importedMonitor?: ImportedMonitor | null
+  /** True while a monitoring workbook is being read. */
+  monitorPending?: boolean
+  /** Why the last monitoring workbook could not be read. */
+  monitorError?: UploadError | null
+  onImportMonitor?: (file: File) => void
+  onClearMonitorError?: () => void
 }
 
 /**
@@ -53,6 +68,11 @@ export default function UploadScreen({
   onGenerateWorkbook,
   generationError = null,
   addedSequence = null,
+  importedMonitor = null,
+  monitorPending = false,
+  monitorError = null,
+  onImportMonitor,
+  onClearMonitorError = () => {},
 }: Props) {
   const [file, setFile] = useState<File | null>(null)
   const [rejection, setRejection] = useState<string | null>(null)
@@ -92,7 +112,8 @@ export default function UploadScreen({
   }
 
   return (
-    <form className="card" aria-busy={pending} onSubmit={submit}>
+    <>
+      <form className="card" aria-busy={pending} onSubmit={submit}>
       <h2>Upload the quotation</h2>
       <p className="muted">
         Choose the quotation PDF downloaded from the ERP. The details will appear for you to check
@@ -210,6 +231,17 @@ export default function UploadScreen({
           </button>
         </section>
       )}
-    </form>
+      </form>
+
+      {onImportMonitor && (
+        <MonitorImportSection
+          monitor={importedMonitor}
+          busy={monitorPending}
+          error={monitorError}
+          onImport={onImportMonitor}
+          onClearError={onClearMonitorError}
+        />
+      )}
+    </>
   )
 }

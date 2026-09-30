@@ -1,0 +1,155 @@
+"""Builders for monitoring workbooks used by the import tests.
+
+Two sources are used on purpose:
+
+- ``generated_monitoring_workbook`` runs the real Excel generator, so at least one
+  test proves that a workbook this application actually produces is readable by
+  the import service. That is the round trip the whole feature depends on.
+- The remaining helpers hand-build workbooks that the generator never produces,
+  such as a file with the wrong columns or one saved as plain bytes.
+
+No real business data is used: every client, project and description here is
+invented (AGENTS.md sections 10 and 13).
+"""
+
+from io import BytesIO
+
+from openpyxl import Workbook
+
+from app.excel.openpyxl_generator import OpenpyxlWorkbookGenerator
+from app.models.quotation import Quotation, QuotationItem
+from app.models.workbook import ConfirmedQuotation, ConsolidatedWorkbookRequest
+
+# The exact Summary header the generator writes, in order. Import must find these
+# nine names, so the fixtures use the real list rather than a shortened copy.
+SUMMARY_COLUMNS = list(OpenpyxlWorkbookGenerator.COLUMNS)
+
+
+def _quotation(
+    client: str,
+    project: str,
+    items: list[tuple[str, str, float | None, str | None]],
+) -> Quotation:
+    return Quotation(
+        quotation_number=None,
+        client_name=client,
+        project_name=project,
+        items=[
+            QuotationItem(sr=sr, description=description, quantity=quantity, unit=unit)
+            for sr, description, quantity, unit in items
+        ],
+    )
+
+
+def generated_monitoring_workbook() -> bytes:
+    """A workbook produced by the real generator, as the user would download it.
+
+    Two sequence numbers and three rows, so a test can prove that grouping and
+    row order survive the trip back in.
+    """
+    request = ConsolidatedWorkbookRequest(
+        quotations=[
+            ConfirmedQuotation(
+                sequence_number="001",
+                quotation=_quotation(
+                    "SAMPLE CLIENT TRADING L.L.C",
+                    "MBRC 466",
+                    [
+                        ("1.1", "Sample flooring product", 34.0, "m2"),
+                        ("1.130", "Sample threshold", 88.0, "L.M."),
+                    ],
+                ),
+            ),
+            ConfirmedQuotation(
+                sequence_number="002",
+                quotation=_quotation(
+                    "SAMPLE CLIENT TRADING L.L.C",
+                    "MARINA BAY TOWER",
+                    [("2.42", "Self-levelling compound", 122.0, "m2")],
+                ),
+            ),
+        ]
+    )
+    return OpenpyxlWorkbookGenerator().generate_consolidated(request)
+
+
+def summary_workbook(
+    rows: list[dict[str, object]],
+    columns: list[str] | None = None,
+    sheet_name: str = "Summary",
+    extra_sheets: list[str] | None = None,
+) -> bytes:
+    """A workbook whose Summary sheet holds exactly the given rows.
+
+    Column order comes from ``columns`` (the real nine by default) and each row is
+    a mapping of column name to value, so a test only has to state the cells it
+    cares about; anything it leaves out is written as an empty cell.
+    """
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = sheet_name
+    header = SUMMARY_COLUMNS if columns is None else columns
+
+    for index, name in enumerate(header, start=1):
+        sheet.cell(row=1, column=index, value=name)
+
+    for offset, row in enumerate(rows, start=2):
+        for index, name in enumerate(header, start=1):
+            sheet.cell(row=offset, column=index, value=row.get(name))
+
+    for name in extra_sheets or []:
+        workbook.create_sheet(title=name)
+
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def row(
+    sequence_number: object = "001",
+    client_name: object = "SAMPLE CLIENT TRADING L.L.C",
+    project_name: object = "MBRC 466",
+    product_description: object = "Sample flooring product",
+    quantity: object = 34.0,
+    unit_of_measurement: object = "m2",
+    installation_schedule: object = None,
+    start_date: object = None,
+    status: object = None,
+) -> dict[str, object]:
+    """One Summary row. Named arguments mirror the column names."""
+    return {
+        "Sequence Number": sequence_number,
+        "Client Name": client_name,
+        "Project Name": project_name,
+        "Product Description": product_description,
+        "Quantity": quantity,
+        "Unit of Measurement": unit_of_measurement,
+        "Installation Schedule": installation_schedule,
+        "Start Date": start_date,
+        "Status": status,
+    }
+
+
+def damaged_workbook_bytes() -> bytes:
+    """Bytes that are not a readable workbook at all."""
+    return b"this is not a spreadsheet, it is a sentence"
+
+
+def truncated_workbook_bytes() -> bytes:
+    """A real workbook whose container has been cut short.
+
+    The file starts with the .xlsx zip signature, so only opening it reveals that
+    the archive is incomplete.
+    """
+    complete = summary_workbook([row()])
+    return complete[: len(complete) // 2]
+
+
+__all__ = [
+    "SUMMARY_COLUMNS",
+    "damaged_workbook_bytes",
+    "generated_monitoring_workbook",
+    "row",
+    "summary_workbook",
+    "truncated_workbook_bytes",
+]

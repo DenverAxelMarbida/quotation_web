@@ -6,8 +6,9 @@ which routers the application exposes.
 
 from fastapi import APIRouter
 
-from app.api import quotations, system
+from app.api import monitor, quotations, system
 
 api_router = APIRouter()
 api_router.include_router(system.router)
 api_router.include_router(quotations.router)
+api_router.include_router(monitor.router)
