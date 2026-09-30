@@ -218,6 +218,21 @@ export function MonitorImportSection({
             </div>
           )}
 
+          {/* Stated here rather than at the download because this is the moment she
+              chooses the file. Generating does not edit the workbook in place --
+              the 9 monitoring columns are rebuilt into a new file -- so anything
+              else the office keeps in it is absent from that copy. Deliberate,
+              but she is the one saving over the file, so she is told. */}
+          <p className="notice notice--warning" role="status">
+            <strong>When you generate the workbook</strong>
+            <span className="notice-detail">
+              {' '}
+              the monitoring columns are rebuilt into a new file. Anything outside
+              those columns may not be preserved, so check any other sheets or notes
+              before you replace your copy.
+            </span>
+          </p>
+
           <div className="table-scroll">
             <MonitorTable
               rows={draft.rows}

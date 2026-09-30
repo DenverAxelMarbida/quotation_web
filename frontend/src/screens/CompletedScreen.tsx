@@ -3,6 +3,13 @@
  *
  * Shows the Excel download once generation succeeds. The workbook is generated
  * from the confirmed quotation data and returned as a blob for download.
+ *
+ * Three jobs end here, and they are not the same job: quotations alone, the
+ * monitoring workbook alone, or both combined. The wording names the one that
+ * happened, because this paragraph is the only confirmation the user gets that
+ * the right file was made. A monitor-only export reported as "0 quotations
+ * containing 0 line items combined into a single workbook" would be a sentence
+ * about work that did not occur.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -11,6 +18,11 @@ type Props = {
   excelBlob: Blob | null
   quotationCount: number
   totalLineItems: number
+  /**
+   * Rows already in the workbook the user opened, as they were exported. Decides
+   * whether this was a fresh workbook, a re-export of hers, or both.
+   */
+  existingRowCount?: number
   onStartAnother: () => void
   onResetSession: () => void
 }
@@ -20,13 +32,15 @@ const DOWNLOAD_FILENAME = 'monitoring_sheet.xlsx'
 export default function CompletedScreen({ 
   excelBlob, 
   quotationCount, 
-  totalLineItems, 
+  totalLineItems,
+  existingRowCount = 0,
   onStartAnother,
   onResetSession 
 }: Props) {
   const headingRef = useRef<HTMLHeadingElement>(null)
   const confirmRef = useRef<HTMLHeadingElement>(null)
   const [confirmingClear, setConfirmingClear] = useState(false)
+  const monitorOnly = quotationCount === 0 && existingRowCount > 0
 
   useEffect(() => {
     headingRef.current?.focus()
@@ -59,12 +73,28 @@ export default function CompletedScreen({
       
       {excelBlob ? (
         <>
-          <p>
-            Your quotation data has been converted to Excel format. 
-            <strong>{quotationCount}</strong> quotation{quotationCount !== 1 ? 's' : ''} 
-            containing <strong>{totalLineItems}</strong> line item{totalLineItems !== 1 ? 's' : ''} 
-            have been combined into a single workbook.
-          </p>
+          {monitorOnly ? (
+            <p>
+              Your existing monitor has been exported with your saved changes. The workbook contains
+              the same <strong>{existingRowCount}</strong> row
+              {existingRowCount !== 1 ? 's' : ''}, in the same order, with the details you corrected.
+            </p>
+          ) : existingRowCount > 0 ? (
+            <p>
+              Your existing monitor and new quotations have been combined into one workbook. The{' '}
+              <strong>{existingRowCount}</strong> row{existingRowCount !== 1 ? 's' : ''} already in
+              the monitoring workbook come first, followed by{' '}
+              <strong>{quotationCount}</strong> quotation{quotationCount !== 1 ? 's' : ''} containing{' '}
+              <strong>{totalLineItems}</strong> line item{totalLineItems !== 1 ? 's' : ''}.
+            </p>
+          ) : (
+            <p>
+              Your quotation data has been converted to Excel format.
+              <strong>{quotationCount}</strong> quotation{quotationCount !== 1 ? 's' : ''}
+              containing <strong>{totalLineItems}</strong> line item{totalLineItems !== 1 ? 's' : ''}
+              have been combined into a single workbook.
+            </p>
+          )}
           <p>
             Click below to download the consolidated workbook.
           </p>

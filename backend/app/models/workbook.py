@@ -9,7 +9,7 @@ fresh one. Those rows are a different kind of thing from a quotation and are
 modelled separately: see :class:`ConsolidatedWorkbookRequest`.
 """
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.monitor import ImportedMonitorRow
 from app.models.quotation import Quotation
@@ -35,14 +35,24 @@ class ConfirmedQuotation(BaseModel):
 
 
 class ConsolidatedWorkbookRequest(BaseModel):
-    """Request to generate a consolidated Excel workbook from multiple quotations.
+    """Request to generate a consolidated Excel workbook.
 
-    Each quotation in the list contributes its line items to the Excel workbook,
-    with all items from a single quotation sharing the same sequence number.
+    A workbook is built from two possible sources, and either one is enough:
 
-    ``existing_rows`` carries the rows of a monitoring workbook the user opened
-    earlier. They are written first, exactly as they stand, so the generated file
-    is that workbook plus the new quotations rather than a replacement for it.
+    ``quotations``
+        Quotations added in this session, each contributing its line items, with
+        all items of one quotation sharing its sequence number.
+    ``existing_rows``
+        The Summary rows of a monitoring workbook the user opened earlier. They
+        are written first, exactly as they stand, so the generated file is that
+        workbook plus whatever is new, rather than a replacement for it.
+
+    That second source is not only a prefix to something else. Re-exporting a
+    workbook on its own is a real job: the user opened the file, corrected a row
+    and wants the corrected copy back, without having to invent a quotation just
+    to make the export happen. So the three combinations that describe real work
+    are all accepted, and only the fourth -- neither source, nothing to write --
+    is refused.
 
     The two lists stay separate on purpose. An existing row is a finished Summary
     row the user owns, complete with the schedule, date and status they set in
@@ -50,18 +60,40 @@ class ConsolidatedWorkbookRequest(BaseModel):
     the other would mean inventing a client, a project and a blank status for
     every existing row, and losing the three fields that matter most.
 
-    Optional and defaulting to empty, so a request that only carries quotations
-    behaves exactly as it did before this field existed.
+    Both default to empty so a request that mentions only one source is
+    unambiguous, and so the model decides the rule in one place rather than
+    leaving each caller to guess.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     quotations: list[ConfirmedQuotation] = Field(
-        description="List of confirmed quotations, each with its assigned sequence number.",
-        min_length=1,
+        default_factory=list,
+        description="Confirmed quotations added in this session, each with its "
+        "assigned sequence number. May be empty when the workbook is being "
+        "re-exported without any new quotation.",
     )
     existing_rows: list[ImportedMonitorRow] = Field(
         default_factory=list,
         description="Rows already in the monitoring workbook the user opened. "
         "Written as they stand, before any new quotation.",
     )
+
+    @model_validator(mode="after")
+    def _require_at_least_one_source(self) -> "ConsolidatedWorkbookRequest":
+        """Refuse a request that has nothing to write.
+
+        The generator would happily build a header-only spreadsheet from this, and
+        the user would receive a file called `monitoring_sheet.xlsx` containing
+        no monitoring sheet at all. Both fields being individually optional makes
+        the pair a decision that has to be stated once, here, rather than
+        repeated in every caller.
+        """
+        if not self.quotations and not self.existing_rows:
+            raise ValueError(
+                "Nothing to generate: provide at least one of 'quotations' or "
+                "'existing_rows'. A workbook is built from quotations added in "
+                "this session, from the rows of a monitoring workbook already "
+                "opened, or from both."
+            )
+        return self

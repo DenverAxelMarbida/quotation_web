@@ -573,7 +573,10 @@ describe('the edited monitor stays out of the quotation session', () => {
     save()
 
     await within(section()).findByText(/changes saved/i)
-    expect(screen.queryByRole('button', { name: /generate consolidated workbook/i })).toBeNull()
+    // Re-exporting the workbook is a complete job in its own right, so the action
+    // is offered. What matters here is that the corrected rows did not become
+    // session quotations waiting to be added a second time.
+    expect(screen.getByRole('button', { name: /generate consolidated workbook/i })).toBeInTheDocument()
     expect(screen.queryByRole('table', { name: /quotations already added/i })).toBeNull()
   })
 

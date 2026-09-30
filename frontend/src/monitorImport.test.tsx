@@ -484,9 +484,12 @@ describe('the imported monitor stays separate from the session', () => {
     chooseAndImport(monitorFile())
 
     await within(section()).findByText(/existing monitor loaded/i)
+    // The workbook can now be regenerated on its own, so the action exists. What
+    // matters here is that opening a file did not turn its rows into quotations
+    // queued up in this session.
     expect(
-      screen.queryByRole('button', { name: /generate consolidated workbook/i }),
-    ).not.toBeInTheDocument()
+      screen.getByRole('button', { name: /generate consolidated workbook/i }),
+    ).toBeInTheDocument()
     expect(
       screen.queryByRole('table', { name: /quotations already added/i }),
     ).not.toBeInTheDocument()

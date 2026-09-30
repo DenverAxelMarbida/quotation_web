@@ -125,6 +125,43 @@ def combined_monitoring_workbook() -> bytes:
     return OpenpyxlWorkbookGenerator().generate_consolidated(request)
 
 
+def existing_monitor_rows() -> list[ImportedMonitorRow]:
+    """Two rows as a monitoring workbook holds them, for request-model tests.
+
+    Deliberately out of numeric order (007 before 003) and with a leading zero, so
+    a test that cares about order or about sequences being identifiers can tell
+    the difference. Every field is stated, because these tests are about what
+    survives the request rather than about any default.
+
+    No real business data: invented names throughout (AGENTS.md sections 10
+    and 13).
+    """
+    return [
+        ImportedMonitorRow(
+            sequence_number="007",
+            client_name="SAMPLE CLIENT TRADING L.L.C",
+            project_name="MARINA BAY TOWER",
+            product_description="Sample skirting profile",
+            quantity=18.0,
+            unit_of_measurement="L.M.",
+            installation_schedule="15-20 Nov 2026",
+            start_date="2026-11-15",
+            status="Ongoing",
+        ),
+        ImportedMonitorRow(
+            sequence_number="003",
+            client_name="SAMPLE CLIENT TRADING L.L.C",
+            project_name="MBRC 466",
+            product_description="Sample threshold strip",
+            quantity=6.0,
+            unit_of_measurement="L.M.",
+            installation_schedule="",
+            start_date=None,
+            status="On Hold",
+        ),
+    ]
+
+
 def summary_workbook(
     rows: list[dict[str, object]],
     columns: list[str] | None = None,
@@ -201,6 +238,7 @@ __all__ = [
     "SUMMARY_COLUMNS",
     "combined_monitoring_workbook",
     "damaged_workbook_bytes",
+    "existing_monitor_rows",
     "generated_monitoring_workbook",
     "row",
     "summary_workbook",

@@ -451,6 +451,9 @@ export default function App() {
         <CompletedScreen
           excelBlob={excelBlob}
           quotationCount={confirmedQuotations.length}
+          // Decides whether the completion message describes a fresh workbook, a
+          // re-export of the one the user opened, or both combined.
+          existingRowCount={monitorDraft.saved.length}
           totalLineItems={
             confirmedQuotations.reduce(
               (sum, cq) => sum + cq.quotation.items.length,

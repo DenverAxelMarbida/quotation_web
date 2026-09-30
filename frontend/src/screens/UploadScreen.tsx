@@ -92,6 +92,16 @@ export default function UploadScreen({
     (sum, quotation) => sum + quotation.quotation.items.length,
     0,
   )
+  const monitorRowCount = monitorDraft?.saved.length ?? 0
+
+  // A workbook is built from either source, so either one is enough to offer the
+  // action. Re-exporting a monitoring workbook on its own is a real job -- the
+  // user opened the file, corrected a row and wants the corrected copy back --
+  // and it would be strange to make her invent a quotation to get a file out of
+  // the system. With neither source there is nothing to write, so the action is
+  // not offered at all.
+  const canGenerate = confirmedQuotationCount > 0 || monitorRowCount > 0
+  const monitorOnly = confirmedQuotationCount === 0 && monitorRowCount > 0
 
   const message = rejection ?? error?.message ?? null
   const detail = rejection ? null : (error?.detail ?? null)
@@ -176,54 +186,79 @@ export default function UploadScreen({
         </div>
       )}
 
-      {confirmedQuotationCount > 0 && onGenerateWorkbook && (
+      {canGenerate && onGenerateWorkbook && (
         <section className="session" aria-labelledby="session-heading">
-          <h3 id="session-heading">Session quotations</h3>
+          <h3 id="session-heading">
+            {monitorOnly ? 'Export the monitoring workbook' : 'Session quotations'}
+          </h3>
           <p className="notice notice--success" role="status">
             <strong>
-              {confirmedQuotationCount} quotation{confirmedQuotationCount === 1 ? '' : 's'} ready for
-              Excel · {confirmedLineItemCount} line item{confirmedLineItemCount === 1 ? '' : 's'}
+              {monitorOnly
+                ? 'Existing monitor ready to export'
+                : confirmedQuotationCount > 0 && monitorRowCount > 0
+                  ? 'Ready to generate'
+                  : `${confirmedQuotationCount} quotation${confirmedQuotationCount === 1 ? '' : 's'} ready for Excel · ${confirmedLineItemCount} line item${confirmedLineItemCount === 1 ? '' : 's'}`}
             </strong>
+            {/* When both sources are present the counts have to name both, or the
+                user cannot tell that the rows she has maintained all year are in
+                the file. */}
+            {confirmedQuotationCount > 0 && monitorRowCount > 0 && (
+              <span className="notice-detail">
+                {monitorRowCount} existing monitor row{monitorRowCount === 1 ? '' : 's'} ·{' '}
+                {confirmedQuotationCount} new quotation{confirmedQuotationCount === 1 ? '' : 's'} ·{' '}
+                {confirmedLineItemCount} new line item{confirmedLineItemCount === 1 ? '' : 's'}
+              </span>
+            )}
+            {monitorOnly && (
+              <span className="notice-detail">
+                {monitorRowCount} monitor row{monitorRowCount === 1 ? '' : 's'} from the workbook you
+                opened
+              </span>
+            )}
           </p>
-          <div className="table-scroll">
-            <table className="session-table">
-              <caption className="visually-hidden">
-                Quotations already added to this session. Use View to check one before generating
-                the workbook.
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col" className="align-center">Seq.</th>
-                  <th scope="col">Quotation Number</th>
-                  <th scope="col">Client</th>
-                  <th scope="col">Project</th>
-                  <th scope="col" className="align-center">Items</th>
-                  <th scope="col" className="align-center">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {confirmedQuotations.map((confirmed, index) => (
-                  <tr key={`${confirmed.sequence_number}-${index}`}>
-                    <td className="align-center">{confirmed.sequence_number}</td>
-                    <td>{confirmed.quotation.quotation_number ?? '—'}</td>
-                    <td>{confirmed.quotation.client_name ?? '—'}</td>
-                    <td>{confirmed.quotation.project_name ?? '—'}</td>
-                    <td className="align-center">{confirmed.quotation.items.length}</td>
-                    <td className="align-center">
-                      <button
-                        type="button"
-                        className="link-button"
-                        aria-label={`View details for sequence ${confirmed.sequence_number}`}
-                        onClick={() => onViewQuotation?.(index)}
-                      >
-                        View
-                      </button>
-                    </td>
+          {/* The session table lists quotations added here, so with none there is
+              nothing to list and an empty table would read as an error. */}
+          {confirmedQuotationCount > 0 && (
+            <div className="table-scroll">
+              <table className="session-table">
+                <caption className="visually-hidden">
+                  Quotations already added to this session. Use View to check one before generating
+                  the workbook.
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col" className="align-center">Seq.</th>
+                    <th scope="col">Quotation Number</th>
+                    <th scope="col">Client</th>
+                    <th scope="col">Project</th>
+                    <th scope="col" className="align-center">Items</th>
+                    <th scope="col" className="align-center">Action</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {confirmedQuotations.map((confirmed, index) => (
+                    <tr key={`${confirmed.sequence_number}-${index}`}>
+                      <td className="align-center">{confirmed.sequence_number}</td>
+                      <td>{confirmed.quotation.quotation_number ?? '—'}</td>
+                      <td>{confirmed.quotation.client_name ?? '—'}</td>
+                      <td>{confirmed.quotation.project_name ?? '—'}</td>
+                      <td className="align-center">{confirmed.quotation.items.length}</td>
+                      <td className="align-center">
+                        <button
+                          type="button"
+                          className="link-button"
+                          aria-label={`View details for sequence ${confirmed.sequence_number}`}
+                          onClick={() => onViewQuotation?.(index)}
+                        >
+                          View
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           {generationError && (
             <div className="alert alert--danger" role="alert">
               <p className="alert-message">Excel generation failed. Please try again.</p>
