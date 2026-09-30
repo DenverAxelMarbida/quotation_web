@@ -64,13 +64,37 @@ class MonitorImportService:
                 "and save it before uploading it here."
             )
 
-        highest = max(rows, key=lambda item: int(item.sequence_number))
+        highest = max(rows, key=self._sequence_order)
         return ImportedMonitor(
             rows=rows,
             highest_sequence=highest.sequence_number,
             row_count=len(rows),
             source_filename=filename,
         )
+
+    @staticmethod
+    def _sequence_order(item: ImportedMonitorRow) -> int:
+        """Where a row sits on the whole-number sequence this application assigns.
+
+        A monitoring sheet orders its quotations by whole number, because a new
+        one is the highest plus one. A dotted value such as ``1.130`` is a
+        quotation's line-item number rather than its Sequence Number, so it has no
+        place on that ordering and is refused here.
+
+        :meth:`_sequence_number` already rejects such a value, so this is a second
+        line of defence rather than the primary check. It is kept because the
+        ordering is the one place where a value that is not a whole number would
+        otherwise raise a ``ValueError`` from ``int()`` and surface to the user as
+        a server error instead of a message about their file.
+        """
+        if not item.sequence_number.isdigit():
+            raise InvalidSequenceNumberError(
+                f"This sheet has the Sequence Number {item.sequence_number!r}, which "
+                "is not a whole number. The Sequence Number in a monitoring sheet is "
+                "the quotation number, such as 001. A number written like 1.130 is a "
+                "line-item number and belongs in the quotation, not in this column."
+            )
+        return int(item.sequence_number)
 
     def _read_rows(self, xlsx_bytes: bytes) -> list[ImportedMonitorRow]:
         if not xlsx_bytes:

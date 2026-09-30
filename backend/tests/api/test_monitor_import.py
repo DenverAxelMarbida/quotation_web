@@ -9,7 +9,9 @@ like a sentence rather than a traceback).
 import pytest
 from fastapi.testclient import TestClient
 
+from app.dependencies import get_monitor_import_service
 from app.main import app
+from app.services.monitor_import_service import MonitorImportService
 from tests.fixtures.build_monitor_workbook import (
     SUMMARY_COLUMNS,
     damaged_workbook_bytes,
@@ -147,3 +149,31 @@ def test_the_existing_routes_are_unchanged() -> None:
     paths = client.get("/openapi.json").json()["paths"]
     assert "/api/quotations/parse" in paths
     assert "/api/monitor/import" in paths
+
+
+class _SequenceValidatorRelaxed(MonitorImportService):
+    """Lets a dotted Sequence Number past the row-level check.
+
+    The real validator refuses one, so this stands in for a future relaxation and
+    shows that the endpoint still answers with a clean error rather than a server
+    failure if a dotted value ever gets that far.
+    """
+
+    def _sequence_number(self, value, line: int) -> str:
+        return str(value).strip() if value not in (None, "") else ""
+
+
+@pytest.mark.parametrize("value", ["1.130", "7.90", "007.90"])
+def test_a_dotted_sequence_number_answers_with_a_monitor_error_not_a_server_error(
+    value: str,
+) -> None:
+    app.dependency_overrides[get_monitor_import_service] = _SequenceValidatorRelaxed
+    try:
+        response = upload(summary_workbook([row(sequence_number=value)]))
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "InvalidSequenceNumberError"
+    assert value in body["error"]["detail"]

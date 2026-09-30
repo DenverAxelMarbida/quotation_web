@@ -311,6 +311,79 @@ def test_an_invalid_sequence_number_is_rejected() -> None:
     assert "N/A" in str(failure.value)
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("001", "001"),
+        ("007", "007"),
+        (1, "1"),
+        (7, "7"),
+    ],
+)
+def test_a_whole_number_sequence_number_comes_back_as_the_sheet_shows_it(
+    value: object, expected: str
+) -> None:
+    # The whole-number Sequence Numbers a monitoring sheet is meant to hold. A
+    # text cell keeps its zeros; a hand-typed number does not gain any.
+    monitor = service.import_monitor(
+        summary_workbook([row(sequence_number=value)]), "monitoring_sheet.xlsx"
+    )
+
+    assert monitor.rows[0].sequence_number == expected
+
+
+@pytest.mark.parametrize("value", ["1.130", "7.90", "007.90", "N/A", None, ""])
+def test_a_sequence_number_that_is_not_a_whole_number_is_refused(value: object) -> None:
+    # A dotted value is a quotation's line-item number, not the number its rows are
+    # grouped under, so it has no meaning in this column.
+    with pytest.raises(InvalidSequenceNumberError):
+        service.import_monitor(
+            summary_workbook([row(sequence_number=value)]), "monitoring_sheet.xlsx"
+        )
+
+
+class _SequenceValidatorRelaxed(MonitorImportService):
+    """A stand-in for a future relaxation of the row-level Sequence Number check.
+
+    The row validator refuses a dotted Sequence Number long before the ordering
+    calculation sees one, so the calculation's own guard is otherwise
+    unreachable. Subclassing here lets a dotted value through it, which is how the
+    guard is shown to hold.
+    """
+
+    def _sequence_number(self, value, line: int) -> str:
+        return str(value).strip() if value not in (None, "") else ""
+
+
+@pytest.mark.parametrize("value", ["1.130", "7.90", "007.90", "N/A"])
+def test_a_dotted_sequence_number_cannot_reach_the_ordering_calculation(value: str) -> None:
+    # The ordering is the one place a value that is not a whole number would
+    # raise a ValueError from int(). It must be a message about the user's file
+    # instead.
+    with pytest.raises(InvalidSequenceNumberError) as failure:
+        _SequenceValidatorRelaxed().import_monitor(
+            summary_workbook([row(sequence_number=value)]), "monitoring_sheet.xlsx"
+        )
+
+    assert value in str(failure.value)
+
+
+def test_the_ordering_still_finds_the_highest_whole_number() -> None:
+    # The guard must not cost the calculation what it is there to provide.
+    monitor = _SequenceValidatorRelaxed().import_monitor(
+        summary_workbook(
+            [
+                row(sequence_number="007", product_description="after the gap"),
+                row(sequence_number="001", product_description="first"),
+                row(sequence_number="002", product_description="second"),
+            ]
+        ),
+        "monitoring_sheet.xlsx",
+    )
+
+    assert monitor.highest_sequence == "007"
+
+
 def test_a_blank_sequence_number_is_rejected() -> None:
     # Every row in a monitoring sheet belongs to a numbered quotation.
     with pytest.raises(InvalidSequenceNumberError):
