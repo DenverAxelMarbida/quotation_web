@@ -14,6 +14,7 @@
 import { useId, useState, type ChangeEvent, type FormEvent } from 'react'
 import type { ConfirmedQuotation } from '../types/quotation'
 import type { ImportedMonitor } from '../types/monitor'
+import type { EditableMonitorField, MonitorDraftState } from '../state/monitorDraft'
 import MonitorImportSection from './MonitorImportSection'
 import ProcessingScreen from './ProcessingScreen'
 
@@ -47,6 +48,10 @@ type Props = {
   monitorError?: UploadError | null
   onImportMonitor?: (file: File) => void
   onClearMonitorError?: () => void
+  monitorDraft?: MonitorDraftState
+  onMonitorFieldChange?: (index: number, field: EditableMonitorField, value: string) => void
+  onSaveMonitor?: () => void
+  onCancelMonitor?: () => void
 }
 
 /**
@@ -73,6 +78,10 @@ export default function UploadScreen({
   monitorError = null,
   onImportMonitor,
   onClearMonitorError = () => {},
+  monitorDraft,
+  onMonitorFieldChange,
+  onSaveMonitor,
+  onCancelMonitor,
 }: Props) {
   const [file, setFile] = useState<File | null>(null)
   const [rejection, setRejection] = useState<string | null>(null)
@@ -233,13 +242,17 @@ export default function UploadScreen({
       )}
       </form>
 
-      {onImportMonitor && (
+      {onImportMonitor && monitorDraft && (
         <MonitorImportSection
           monitor={importedMonitor}
+          draft={monitorDraft}
           busy={monitorPending}
           error={monitorError}
           onImport={onImportMonitor}
           onClearError={onClearMonitorError}
+          onFieldChange={(index, field, value) => onMonitorFieldChange?.(index, field, value)}
+          onSave={() => onSaveMonitor?.()}
+          onCancel={() => onCancelMonitor?.()}
         />
       )}
     </>

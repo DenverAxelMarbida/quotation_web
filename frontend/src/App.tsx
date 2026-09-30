@@ -11,7 +11,7 @@
  * confirm the wrong document (AGENTS.md section 9).
  */
 
-import { useState } from 'react'
+import { useReducer, useState } from 'react'
 import { ApiError } from './api/client'
 import { importMonitor } from './api/monitor'
 import {
@@ -21,6 +21,7 @@ import {
 import CompletedScreen from './screens/CompletedScreen'
 import ReviewScreen from './screens/ReviewScreen'
 import UploadScreen, { type UploadError } from './screens/UploadScreen'
+import { createMonitorDraft, monitorDraftReducer } from './state/monitorDraft'
 import {
   findDuplicateFingerprint,
   findDuplicateQuotationNumber,
@@ -121,6 +122,19 @@ export default function App() {
   const [importedMonitor, setImportedMonitor] = useState<ImportedMonitor | null>(null)
   const [monitorError, setMonitorError] = useState<UploadError | null>(null)
   const [monitorPending, setMonitorPending] = useState(false)
+  /**
+   * The rows being corrected, and the last set the user confirmed.
+   *
+   * Held here rather than inside the section so the screen stays presentational
+   * and so the saved state outlives any one editing session. Three levels of
+   * truth, and nothing is written to disk between them: the import result, the
+   * working copy, and the confirmed baseline that Cancel returns to.
+   */
+  const [monitorDraft, dispatchMonitorDraft] = useReducer(
+    monitorDraftReducer,
+    null,
+    createMonitorDraft,
+  )
 
   /**
    * `useQuotationDraft` seeds its reducer on mount, so a second upload needs a
@@ -193,7 +207,11 @@ export default function App() {
     setMonitorPending(true)
     setMonitorError(null)
     try {
-      setImportedMonitor(await importMonitor(file))
+      const opened = await importMonitor(file)
+      setImportedMonitor(opened)
+      // A new file is a new set of rows, and starts from what that file holds
+      // rather than from the edits made to the last one.
+      dispatchMonitorDraft({ type: 'reset', monitor: opened })
     } catch (cause) {
       // A failed read must not leave an earlier workbook on screen next to the
       // new error, or the user would read the message against the wrong rows.
@@ -344,6 +362,12 @@ export default function App() {
           monitorPending={monitorPending}
           monitorError={monitorError}
           onImportMonitor={readMonitor}
+          monitorDraft={monitorDraft}
+          onMonitorFieldChange={(index, field, value) =>
+            dispatchMonitorDraft({ type: 'row/set', index, field, value })
+          }
+          onSaveMonitor={() => dispatchMonitorDraft({ type: 'save' })}
+          onCancelMonitor={() => dispatchMonitorDraft({ type: 'cancel' })}
           onClearMonitorError={() => setMonitorError(null)}
         />
       )}

@@ -1,83 +1,82 @@
 /**
- * The "Continue Existing Monitor" part of the upload screen.
+ * Opening the monitoring workbook the company already keeps.
  *
- * The monitoring workbook is the work state that outlives this application: the
- * user keeps it in OneDrive, shares it with coworkers, and comes back to it days
- * later. This section opens one so the user can see what it already holds.
+ * The file belongs to the user and stays where it is, in OneDrive. This section
+ * reads it so the rows can be checked against reality, and from Phase 5B onward
+ * corrected in the browser.
  *
- * It is a viewer, not a form. The workbook belongs to the user and is the record
- * of record, so nothing here edits a value, writes back, or offers to continue
- * from what was read. Every cell is shown as the file stores it, including the
- * blanks: a gap in the preview is a gap in the workbook, and hiding it would
- * make the file look more complete than it is.
+ * The two states are deliberate. The preview comes first and shows the file as
+ * it actually is, and editing begins only when the user asks for it. Saving then
+ * keeps the changes in the browser for this session only, and says so plainly,
+ * because the alternative is the user leaving believing their workbook was
+ * updated. Nothing here writes to a file, and the quotation form above is a
+ * separate concern: a workbook is never read as a PDF.
  */
 
 import { useId, useState, type ChangeEvent } from 'react'
-import type { ImportedMonitor, ImportedMonitorRow } from '../types/monitor'
+import type { ImportedMonitor } from '../types/monitor'
+import type { EditableMonitorField, MonitorDraftState } from '../state/monitorDraft'
+import { changedRowCount, hasUnsavedChanges } from '../state/monitorDraft'
+import { MonitorTable } from './MonitorTable'
 
-/** A failure worth showing a non-technical user, in their language. */
-type MonitorImportError = {
+const XLSX_MEDIA_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+/** A read failure worth showing the user, in their language. */
+export type MonitorImportError = {
   message: string
   detail: string | null
 }
 
 type Props = {
-  /** The workbook that was read, shown as a read-only preview. */
+  /** The workbook that was read, shown as a preview and then as an editor. */
   monitor: ImportedMonitor | null
+  /** The rows being corrected, and the last set the user confirmed. */
+  draft: MonitorDraftState
   /** True while the file is being read, so the section can say so. */
   busy: boolean
   /** Why the last file could not be read, or null. */
   error: MonitorImportError | null
   onImport: (file: File) => void
   onClearError: () => void
+  onFieldChange: (index: number, field: EditableMonitorField, value: string) => void
+  onSave: () => void
+  onCancel: () => void
 }
 
-const XLSX_MEDIA_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-
 /**
- * Accepts a workbook by content type or by extension. A saved-as-legacy `.xls`
- * or a renamed `.csv` is refused here rather than after the upload, but the
- * backend still opens whatever arrives, because the name proves nothing.
+ * Whether a chosen file is one this can read.
+ *
+ * Checked here so a mis-picked file is caught before it is sent, and worded for
+ * someone who has never seen a file extension.
  */
 function looksLikeWorkbook(file: File): boolean {
-  return file.type === XLSX_MEDIA_TYPE || file.name.toLowerCase().endsWith('.xlsx')
+  if (file.name.toLowerCase().endsWith('.xlsx')) return true
+  return file.type === XLSX_MEDIA_TYPE
 }
 
-/** Shown for a cell the workbook left empty, so the gap is visible. */
-const EMPTY_CELL = '—'
-
-function Cell({ value }: { value: string | number | null }) {
-  const empty = value === null || value === '' || value === undefined
-  return <>{empty ? EMPTY_CELL : value}</>
+/** The lowest sequence in the file, which is where the loaded range starts. */
+function lowestSequence(rows: ImportedMonitor['rows']): string | null {
+  if (rows.length === 0) return null
+  return rows
+    .map((row) => row.sequence_number)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))[0]
 }
 
-/**
- * The lowest sequence number present, for the summary line.
- *
- * Compared as a number so the range starts at the first project rather than
- * whichever identifier happens to sort first as text.
- */
-function lowestSequence(rows: ImportedMonitorRow[]): string | null {
-  let lowest: { value: number; text: string } | null = null
-  for (const row of rows) {
-    const value = Number.parseInt(row.sequence_number, 10)
-    if (!Number.isFinite(value)) continue
-    if (lowest === null || value < lowest.value) {
-      lowest = { value, text: row.sequence_number }
-    }
-  }
-  return lowest?.text ?? null
-}
-
-export default function MonitorImportSection({
+export function MonitorImportSection({
   monitor,
+  draft,
   busy,
   error,
   onImport,
   onClearError,
+  onFieldChange,
+  onSave,
+  onCancel,
 }: Props) {
   const [file, setFile] = useState<File | null>(null)
   const [rejection, setRejection] = useState<string | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [savedNotice, setSavedNotice] = useState(false)
   const inputId = useId()
   const headingId = useId()
 
@@ -87,9 +86,12 @@ export default function MonitorImportSection({
   function choose(event: ChangeEvent<HTMLInputElement>) {
     const chosen = event.target.files?.[0] ?? null
     setRejection(null)
+    setSavedNotice(false)
+    setEditing(false)
     onClearError()
 
     if (chosen && !looksLikeWorkbook(chosen)) {
+      // Caught at the moment of choosing, so the file is never even sent.
       setRejection(
         `${chosen.name} is not a monitoring Excel file. Please choose the ` +
           'monitoring .xlsx file you generated earlier.',
@@ -101,7 +103,9 @@ export default function MonitorImportSection({
   }
 
   function submit() {
-    if (busy) return
+    // Guarded on `editing` as well as `busy`: opening another workbook resets the
+    // rows, so it must not be possible to discard unsaved edits by accident.
+    if (busy || editing) return
     if (!file) {
       setRejection('Please choose the monitoring Excel file first.')
       return
@@ -109,23 +113,31 @@ export default function MonitorImportSection({
     onImport(file)
   }
 
+  function save() {
+    onSave()
+    setEditing(false)
+    setSavedNotice(true)
+  }
+
+  function cancel() {
+    onCancel()
+    setEditing(false)
+    setSavedNotice(false)
+  }
+
   const lowest = monitor ? lowestSequence(monitor.rows) : null
+  const dirty = hasUnsavedChanges(draft)
+  const changed = changedRowCount(draft)
 
-  return (
-    <section className="monitor-import" aria-labelledby={headingId}>
-      <h3 id={headingId}>Continue Existing Monitor</h3>
-      <p className="muted">
-        Already have a monitoring Excel file? Choose it to see the quotations it contains before you
-        add anything new.
-      </p>
-
+  const picker = (
+    <>
       <div className="field">
         <label htmlFor={inputId}>Monitoring Excel file</label>
         <input
           id={inputId}
           type="file"
           accept={`${XLSX_MEDIA_TYPE},.xlsx`}
-          disabled={busy}
+          disabled={busy || editing}
           onChange={choose}
         />
         {file && (
@@ -144,9 +156,40 @@ export default function MonitorImportSection({
 
       {busy && <p className="muted">Reading the monitoring file…</p>}
 
-      <button type="button" onClick={submit} disabled={busy}>
+      <button type="button" onClick={submit} disabled={busy || editing}>
         Upload Monitor Excel
       </button>
+    </>
+  )
+
+  return (
+    <section className="monitor-import" aria-labelledby={headingId}>
+      <h3 id={headingId}>Continue Existing Monitor</h3>
+      <p className="muted">
+        Already have a monitoring Excel file? Choose it to see the quotations it contains, and correct
+        anything the quotation did not cover. This website reads the file; it never changes it.
+      </p>
+
+      {picker}
+
+      {monitor && (
+        <div className="monitor-import__toolbar">
+          {editing ? (
+            <>
+              <button type="button" onClick={save}>
+                Save changes
+              </button>
+              <button type="button" onClick={cancel}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button type="button" onClick={() => setEditing(true)}>
+              Edit monitor
+            </button>
+          )}
+        </div>
+      )}
 
       {monitor && (
         <div className="monitor-preview">
@@ -162,44 +205,37 @@ export default function MonitorImportSection({
             </span>
           </p>
 
+          {editing && dirty && (
+            <p className="notice notice--warning" role="status">
+              Unsaved changes: {changed === 1 ? '1 row changed' : `${changed} rows changed`}.
+            </p>
+          )}
+
+          {savedNotice && !editing && (
+            <div className="notice notice--success" role="status">
+              <p>Changes saved for this browser session.</p>
+              <p>Your Excel file is not changed by this website.</p>
+            </div>
+          )}
+
           <div className="table-scroll">
-            <table className="session-table monitor-table">
-              <caption className="visually-hidden">
-                Rows found in the uploaded monitoring workbook. This is a read-only view; nothing
-                here has been changed.
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col" className="align-center">Seq.</th>
-                  <th scope="col">Client</th>
-                  <th scope="col">Project</th>
-                  <th scope="col">Product</th>
-                  <th scope="col" className="align-right">Qty</th>
-                  <th scope="col">Unit</th>
-                  <th scope="col">Installation Schedule</th>
-                  <th scope="col">Start Date</th>
-                  <th scope="col">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {monitor.rows.map((row, index) => (
-                  <tr key={`${row.sequence_number}-${index}`}>
-                    <td className="align-center">{row.sequence_number}</td>
-                    <td><Cell value={row.client_name} /></td>
-                    <td><Cell value={row.project_name} /></td>
-                    <td><Cell value={row.product_description} /></td>
-                    <td className="align-right"><Cell value={row.quantity} /></td>
-                    <td><Cell value={row.unit_of_measurement} /></td>
-                    <td><Cell value={row.installation_schedule} /></td>
-                    <td><Cell value={row.start_date} /></td>
-                    <td><Cell value={row.status} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <MonitorTable
+              rows={draft.rows}
+              mode={editing ? 'edit' : 'preview'}
+              onFieldChange={onFieldChange}
+            />
           </div>
+
+          {editing && (
+            <p className="muted">
+              Sequence numbers are not changed here. Add new work through the quotation form above.
+              Save or cancel to choose a different file.
+            </p>
+          )}
         </div>
       )}
     </section>
   )
 }
+
+export default MonitorImportSection

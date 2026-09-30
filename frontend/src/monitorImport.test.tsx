@@ -329,15 +329,32 @@ describe('the imported monitor preview', () => {
   })
 
   it('does not offer to write anything back to the workbook', async () => {
+    // Phase 5A imported read-only and could not be edited. Phase 5B adds editing,
+    // so what still has to hold is the part that matters: the import endpoint is
+    // the only one the monitor ever calls. Saving must not reach the backend, let
+    // alone write the user's workbook. Covered end to end in monitorEdit.test.tsx.
     monitorImport.mockResolvedValue(importedMonitor())
     render(<App />)
 
     chooseAndImport(monitorFile())
 
     await within(section()).findByText(/existing monitor loaded/i)
+    expect(within(section()).queryByRole('button', { name: /write back|continue session/i })).toBeNull()
     expect(
-      within(section()).queryByRole('button', { name: /save|update|write back|continue session/i }),
-    ).not.toBeInTheDocument()
+      within(section()).getByRole('button', { name: /upload monitor excel/i }),
+    ).toBeInTheDocument()
+  })
+
+  it('shows the preview read-only until the user asks to edit', async () => {
+    monitorImport.mockResolvedValue(importedMonitor())
+    render(<App />)
+
+    chooseAndImport(monitorFile())
+    await waitFor(previewTable)
+
+    // Looking at the file must not turn it into a form.
+    expect(within(previewTable()).queryByRole('textbox')).not.toBeInTheDocument()
+    expect(within(previewTable()).queryByRole('combobox')).not.toBeInTheDocument()
   })
 })
 
