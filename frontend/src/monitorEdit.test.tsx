@@ -578,6 +578,10 @@ describe('the edited monitor stays out of the quotation session', () => {
   })
 
   it('does not change the sequence number the next quotation is given', async () => {
+    // The workbook has reached 007, so a new quotation is numbered 008. Correcting
+    // a project name is content the user owns and must not move that number: the
+    // numbering follows the highest Sequence Number the file was opened with,
+    // which no edit can reach.
     await openEditor(
       importedMonitor({ rows: [row({ sequence_number: '007' })], highest_sequence: '007', row_count: 1 }),
     )
@@ -591,7 +595,7 @@ describe('the edited monitor stays out of the quotation session', () => {
     await screen.findByRole('heading', { name: /check the quotation details/i, level: 2 })
     fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
 
-    expect(await screen.findByLabelText(/sequence number/i)).toHaveValue('001')
+    expect(await screen.findByLabelText(/sequence number/i)).toHaveValue('008')
   })
 
   it('does not read a PDF while the monitor is being edited', async () => {

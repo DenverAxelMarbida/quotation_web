@@ -7,7 +7,9 @@
  *
  * The imported rows are a read-only preview. They can be looked at, and nothing
  * else: the section must not offer to edit them, and they must not join the
- * quotation session or change the sequence numbers it hands out.
+ * quotation session. What the workbook does contribute is its highest Sequence
+ * Number, so a quotation added to it is numbered after the file rather than
+ * starting again at 001 (Phase 5C-A).
  */
 
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -490,9 +492,10 @@ describe('the imported monitor stays separate from the session', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('does not change the sequence number the next quotation is given', async () => {
-    // The workbook has already reached 007, but Phase 5A imports nothing into the
-    // session, so a new quotation still starts at 001 here.
+  it('continues the numbering from the workbook, rather than restarting at 001', async () => {
+    // The workbook has already reached 007. A quotation added to it is the eighth,
+    // so it is numbered 008. It is still not a quotation in the session: the rows
+    // stay in their own preview, and the workbook is not downloaded or written to.
     monitorImport.mockResolvedValue(
       importedMonitor({ rows: [row({ sequence_number: '007' })], highest_sequence: '007', row_count: 1 }),
     )
@@ -503,7 +506,7 @@ describe('the imported monitor stays separate from the session', () => {
 
     await reachSequenceStep()
 
-    expect(screen.getByLabelText(/sequence number/i)).toHaveValue('001')
+    expect(screen.getByLabelText(/sequence number/i)).toHaveValue('008')
   })
 
   it('survives adding a quotation afterwards without being lost', async () => {

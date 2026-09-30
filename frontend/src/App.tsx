@@ -28,6 +28,7 @@ import {
   findDuplicateSequence,
   fingerprintFile,
   nextSequenceNumber,
+  type SequenceBaseline,
 } from './state/session'
 import type { ImportedMonitor } from './types/monitor'
 import type {
@@ -142,6 +143,22 @@ export default function App() {
    */
   const [draftId, setDraftId] = useState(0)
 
+  /**
+   * The Sequence Number the opened monitoring workbook has already reached.
+   *
+   * Read from the import result and never from `monitorDraft`: the workbook's
+   * rows are content the user is free to correct, while its highest Sequence
+   * Number is identity, answering only which numbers are taken. Keeping the
+   * draft out of this is what stops an edited client name or status from moving
+   * the number a new quotation is given.
+   *
+   * One function for both the number on offer and the number handed over, so the
+   * two can never be worked out differently.
+   */
+  function sequenceBaseline(): SequenceBaseline | null {
+    return importedMonitor ? { highestSequence: importedMonitor.highest_sequence } : null
+  }
+
   async function readQuotation(file: File) {
     if (pending) return
     setPending(true)
@@ -225,7 +242,7 @@ export default function App() {
   function handleSequenceConfirm(quotation: Quotation) {
     // The number the person was shown. Recomputed here rather than passed by the
     // screen, so a cancelled draft can never consume one.
-    const sequenceNumber = nextSequenceNumber(confirmedQuotations)
+    const sequenceNumber = nextSequenceNumber(confirmedQuotations, sequenceBaseline())
 
     // The number is derived, so this cannot normally fire; guard anyway so a
     // duplicate can never reach the workbook.
@@ -394,7 +411,7 @@ export default function App() {
           error={excelError}
           showSequenceInput
           usedSequenceNumbers={confirmedQuotations.map((cq) => cq.sequence_number)}
-          sequenceNumber={nextSequenceNumber(confirmedQuotations)}
+          sequenceNumber={nextSequenceNumber(confirmedQuotations, sequenceBaseline())}
         />
       )}
 

@@ -25,15 +25,46 @@ export function findDuplicateSequence(
 }
 
 /**
+ * The highest Sequence Number an imported monitoring workbook already holds.
+ *
+ * Only the one value, never its rows. A monitoring workbook is read back
+ * exactly as its owner left it, so the rows are content the user may be editing
+ * and the highest is identity: it answers which numbers are taken, and nothing
+ * else. Keeping the rest of the workbook out of this type is what stops an edit
+ * to a client name or a status from reaching the numbering.
+ */
+export type SequenceBaseline = {
+  /** e.g. `'007'`, or null when the workbook holds no rows. */
+  highestSequence: string | null
+}
+
+/**
  * The sequence number the next quotation should receive.
  *
  * Derived from the highest number already confirmed in the session, never from
  * how many quotations there are: removing one must not let its number be reused.
  * The value is deterministic from the confirmed session, so a draft that is
  * cancelled without being added never consumes a number. Always three digits.
+ *
+ * When the user has opened an existing monitoring workbook, its highest Sequence
+ * Number is folded into the same maximum, so a new quotation carries on from the
+ * file rather than restarting at 001. Taking a maximum over both is also why a
+ * gap the workbook left behind is never filled: 002 to 006 are not visible here,
+ * and a maximum cannot reach past the largest number to find one.
  */
-export function nextSequenceNumber(quotations: ConfirmedQuotation[]): string {
+export function nextSequenceNumber(
+  quotations: ConfirmedQuotation[],
+  baseline: SequenceBaseline | null = null,
+): string {
   let highest = 0
+
+  if (baseline?.highestSequence != null) {
+    const fromMonitor = Number.parseInt(normalizeSequence(baseline.highestSequence), 10)
+    // A value that is not a number is skipped, exactly as a confirmed sequence
+    // that is not a number is, rather than being allowed to end the calculation.
+    if (Number.isFinite(fromMonitor) && fromMonitor > highest) highest = fromMonitor
+  }
+
   for (const confirmed of quotations) {
     const value = Number.parseInt(normalizeSequence(confirmed.sequence_number), 10)
     if (Number.isFinite(value) && value > highest) highest = value

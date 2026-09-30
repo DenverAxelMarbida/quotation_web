@@ -10,8 +10,14 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { ApiError } from './api/client'
+import { importMonitor } from './api/monitor'
 import { generateConsolidatedExcel, generateExcel, parseQuotation } from './api/quotations'
+import type { ImportedMonitor, ImportedMonitorRow } from './types/monitor'
 import type { QuotationPreview } from './types/quotation'
+
+vi.mock('./api/monitor', () => ({
+  importMonitor: vi.fn(),
+}))
 
 vi.mock('./api/quotations', () => ({ 
   parseQuotation: vi.fn(),
@@ -19,6 +25,7 @@ vi.mock('./api/quotations', () => ({
   generateConsolidatedExcel: vi.fn(),
 }))
 
+const monitorImport = vi.mocked(importMonitor)
 const parse = vi.mocked(parseQuotation)
 const genExcel = vi.mocked(generateExcel)
 const genConsolidated = vi.mocked(generateConsolidatedExcel)
@@ -131,6 +138,7 @@ beforeEach(() => {
   parse.mockReset()
   genExcel.mockReset()
   genConsolidated.mockReset()
+  monitorImport.mockReset()
   // By default, generateExcel returns a mock blob
   genExcel.mockResolvedValue(new Blob(['mock excel data'], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
   genConsolidated.mockResolvedValue(new Blob(['mock excel data'], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
@@ -1542,5 +1550,168 @@ describe('review action area and scanning', () => {
     // Header row plus the one quotation that was really added.
     expect(within(table).getAllByRole('row')).toHaveLength(2)
     expect(within(table).getByRole('row', { name: /001/ })).toBeInTheDocument()
+  })
+})
+
+/**
+ * Phase 5C-A: a new quotation continues from the monitoring workbook the user
+ * opened, rather than restarting the count at 001.
+ *
+ * The workbook lives in OneDrive and already holds 001 to 007, so adding an
+ * eighth quotation to it has to be numbered 008. These tests drive the real
+ * screen: the only stub is the network, and the number that comes out is read
+ * from the same `<output>` the mother reads.
+ *
+ * The workbook's rows are the user's to correct, but its highest Sequence Number
+ * is identity rather than content, so editing a client name or a status must not
+ * move the number. And because the number is worked out from what is already
+ * there rather than set aside, a cancelled draft gives its number back.
+ */
+describe('numbering continues from an imported monitor', () => {
+  function monitorRow(overrides: Partial<ImportedMonitorRow> = {}): ImportedMonitorRow {
+    return {
+      sequence_number: '007',
+      client_name: 'SAMPLE CLIENT TRADING L.L.C',
+      project_name: 'MBRC 466',
+      product_description: 'Engineered Oak Flooring 15/4 x 120 x 600mm',
+      quantity: 34,
+      unit_of_measurement: 'm2',
+      installation_schedule: '',
+      start_date: null,
+      status: 'Ongoing',
+      ...overrides,
+    }
+  }
+
+  /** A monitoring workbook whose highest Sequence Number is 007. */
+  function monitorAt007(rows?: ImportedMonitorRow[]): ImportedMonitor {
+    const found = rows ?? [monitorRow()]
+    return {
+      rows: found,
+      highest_sequence: '007',
+      row_count: found.length,
+      source_filename: 'monitoring_sheet.xlsx',
+    }
+  }
+
+  function monitorSection() {
+    return screen.getByRole('region', { name: /continue existing monitor/i })
+  }
+
+  /** Opens the existing workbook and waits for it to be shown. */
+  async function openMonitor(monitor: ImportedMonitor = monitorAt007()) {
+    monitorImport.mockResolvedValue(monitor)
+    render(<App />)
+    const file = new File([`xlsx::${Date.now()}::${Math.random()}`], 'monitoring_sheet.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    fireEvent.change(within(monitorSection()).getByLabelText('Monitoring Excel file'), {
+      target: { files: [file] },
+    })
+    fireEvent.click(within(monitorSection()).getByRole('button', { name: /upload monitor excel/i }))
+    await within(monitorSection()).findByText(/existing monitor loaded/i)
+  }
+
+  /** Reads a PDF and stops on the step where the number is offered. */
+  async function reachSequenceStep(preview: QuotationPreview, name = 'quote.pdf') {
+    parse.mockResolvedValueOnce(preview)
+    chooseAndRead(pdfFile(name))
+    await reviewScreen()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm quotation' }))
+    return sequenceScreen()
+  }
+
+  /** The number currently on offer, as a user reads it. */
+  function offeredSequence() {
+    return screen.getByLabelText('Sequence Number').textContent
+  }
+
+  it('offers 008 when the workbook has already reached 007', async () => {
+    await openMonitor()
+    await reachSequenceStep(referencePreview())
+
+    // Not 001: this quotation is being added to a workbook that has seven
+    // sequence numbers' worth of history behind it.
+    expect(offeredSequence()).toBe('008')
+  })
+
+  it('carries on to 009 after the first new quotation is added', async () => {
+    await openMonitor()
+
+    await reachSequenceStep(referencePreview(), 'first.pdf')
+    expect(offeredSequence()).toBe('008')
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    await reachSequenceStep(alpagoPreview(), 'second.pdf')
+    expect(offeredSequence()).toBe('009')
+  })
+
+  it('gives the number back when a draft is cancelled', async () => {
+    await openMonitor()
+
+    // The first draft is shown 008 and then abandoned.
+    await reachSequenceStep(referencePreview(), 'abandoned.pdf')
+    expect(offeredSequence()).toBe('008')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    // Nothing was ever written, so 008 is still free. A number that had been
+    // set aside rather than worked out would now read 009.
+    await reachSequenceStep(alpagoPreview(), 'second.pdf')
+    expect(offeredSequence()).toBe('008')
+  })
+
+  it('keeps the same number after the monitor rows are edited', async () => {
+    await openMonitor()
+
+    // Correct the workbook the way the mother would, then leave the editor.
+    fireEvent.click(within(monitorSection()).getByRole('button', { name: /edit monitor/i }))
+    const clientName = await within(monitorSection()).findByLabelText('Client Name, row 1')
+    fireEvent.change(clientName, { target: { value: 'ALPAGO DESIGN AND BUILD' } })
+    fireEvent.click(within(monitorSection()).getByRole('button', { name: /save changes/i }))
+
+    await reachSequenceStep(referencePreview())
+
+    // A client name is content. It says nothing about which numbers are taken.
+    expect(offeredSequence()).toBe('008')
+  })
+
+  it('still numbers from the workbook after the quotation session is cleared', async () => {
+    await openMonitor()
+
+    await reachSequenceStep(referencePreview(), 'first.pdf')
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Workbook' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    // Clear the quotations by generating and then clearing, which is the only
+    // route to that button.
+    genConsolidated.mockResolvedValueOnce(new Blob(['mock']))
+    fireEvent.click(screen.getByRole('button', { name: /generate consolidated workbook/i }))
+    await screen.findByRole('heading', { name: /excel file generated/i })
+    fireEvent.click(screen.getByRole('button', { name: 'Clear session' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear session' }))
+    await screen.findByLabelText('Quotation PDF file')
+
+    // Clearing removes the quotations added in this session. It does not forget
+    // the workbook, which is the file the next quotation is being added to.
+    expect(within(monitorSection()).getByText(/existing monitor loaded/i)).toBeInTheDocument()
+
+    await reachSequenceStep(alpagoPreview(), 'second.pdf')
+    expect(offeredSequence()).toBe('008')
+  })
+
+  it('never turns the workbook sequence number into something she can type', async () => {
+    await openMonitor()
+
+    fireEvent.click(within(monitorSection()).getByRole('button', { name: /edit monitor/i }))
+    await waitFor(() =>
+      expect(within(monitorSection()).getByRole('button', { name: /save changes/i })).toBeInTheDocument(),
+    )
+
+    // Now that the workbook takes part in numbering, it would be easy to let the
+    // identifier be edited by accident. It stays a value, not a box.
+    expect(within(monitorSection()).queryByLabelText('Sequence Number, row 1')).toBeNull()
+    expect(within(monitorSection()).getAllByText('007')).not.toHaveLength(0)
   })
 })
