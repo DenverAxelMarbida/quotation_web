@@ -11,6 +11,8 @@ Verifies that the generator:
 
 import inspect
 import math
+import re
+from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
 
@@ -50,6 +52,18 @@ def _consolidated(*pairs: tuple[str, Quotation]) -> ConsolidatedWorkbookRequest:
 
 def _summary(xlsx_bytes: bytes):
     return load_workbook(BytesIO(xlsx_bytes))["Summary"]
+
+
+def _as_date(value):
+    """The date a cell holds, whatever flavour openpyxl read the serial back as.
+
+    Excel dates come back as ``datetime`` and plain dates as ``date``; a value
+    still stored as text comes back as the text it is, so the difference shows
+    up in the comparison rather than hiding inside a string match.
+    """
+    if isinstance(value, datetime):
+        return value.date()
+    return value
 
 
 def test_consolidated_one_quotation_one_item():
@@ -171,7 +185,7 @@ def test_consolidated_field_mapping_and_blank_manual_fields():
     assert row[5] == "m2"
     assert row[6] is None  # Installation Schedule
     assert row[7] is None  # Start Date
-    assert row[8] is None  # Status
+    assert row[8] is None  # Completion Date
 
 
 def test_consolidated_preserves_quotation_and_item_order():
@@ -342,7 +356,7 @@ def test_maps_quotation_fields_correctly():
     assert row[5].value == "m2"
     assert row[6].value is None  # Installation Schedule - blank
     assert row[7].value is None  # Start Date - blank
-    assert row[8].value is None  # Status - blank
+    assert row[8].value is None  # Completion Date - blank
 
 
 def test_handles_null_fields():
@@ -765,6 +779,84 @@ def test_date_columns_use_the_agreed_format(sample_workbook):
         assert cell.value is None
 
 
+def test_the_date_number_format_is_the_agreed_dd_mm_yyyy():
+    """dd/mm/yyyy, spelled exactly that way, on all three date columns.
+
+    The number format is what decides how a real date value reads, so the
+    workbook carries it explicitly instead of inheriting whatever the machine
+    opening the file happens to prefer.
+    """
+    generator = OpenpyxlWorkbookGenerator()
+    request = _combined([_existing(start_date="02/10/2026")])
+
+    sheet = _summary(generator.generate_consolidated(request))
+
+    for col in (7, 8, 9):
+        assert sheet.cell(row=2, column=col).number_format == "dd/mm/yyyy"
+
+
+def test_a_date_written_out_as_text_becomes_a_real_excel_date():
+    """02/10/2026 is stored as the date it names, not as ten characters of text.
+
+    A text cell wearing a date format is the reported defect: a number format
+    only ever applies to a number, so the file had no say in what was displayed
+    and Excel was free to reinterpret the text the next time the cell was
+    touched. Stored as a date, the cell holds 2 October 2026 and the format
+    renders it as 02/10/2026 wherever the file is opened.
+    """
+    generator = OpenpyxlWorkbookGenerator()
+    request = _combined([_existing(start_date="02/10/2026", completion_date="20/11/2026")])
+
+    sheet = _summary(generator.generate_consolidated(request))
+
+    start = sheet.cell(row=2, column=8)
+    completion = sheet.cell(row=2, column=9)
+    assert _as_date(start.value) == date(2026, 10, 2)
+    assert _as_date(completion.value) == date(2026, 11, 20)
+    assert start.number_format == "dd/mm/yyyy"
+    assert completion.number_format == "dd/mm/yyyy"
+
+
+def test_plain_text_in_a_date_column_is_written_through_untouched():
+    """A phrase the user wrote is hers: not parsed, not corrected, not dropped.
+
+    The format still applies, so the column reads the same whether a cell holds
+    a date or the sentence she typed instead of one.
+    """
+    generator = OpenpyxlWorkbookGenerator()
+    request = _combined(
+        [_existing(installation_schedule="15-20 Nov 2026", start_date="to be agreed")]
+    )
+
+    sheet = _summary(generator.generate_consolidated(request))
+
+    assert sheet.cell(row=2, column=7).value == "15-20 Nov 2026"
+    assert sheet.cell(row=2, column=8).value == "to be agreed"
+    for col in (7, 8, 9):
+        assert sheet.cell(row=2, column=col).number_format == "dd/mm/yyyy"
+
+
+def test_the_import_service_reads_back_what_the_generator_wrote():
+    """A date written as a real value still arrives as the same date.
+
+    Round trip: the generator converts the text to a date, and the import that
+    runs the next time the file is opened turns that date back into the
+    dd/mm/yyyy text the application holds. Anything else would drift the date a
+    little further each time the file was saved and reopened.
+    """
+    from app.services.monitor_import_service import MonitorImportService
+
+    generator = OpenpyxlWorkbookGenerator()
+    xlsx_bytes = generator.generate_consolidated(
+        _combined([_existing(start_date="02/10/2026", completion_date="20/11/2026")])
+    )
+
+    imported = MonitorImportService().import_monitor(xlsx_bytes, "monitor.xlsx")
+
+    assert imported.rows[0].start_date == "02/10/2026"
+    assert imported.rows[0].completion_date == "20/11/2026"
+
+
 def test_date_cells_have_date_data_validation(sample_workbook):
     sheet = sample_workbook["Summary"]
     date_rules = [dv for dv in sheet.data_validations.dataValidation if dv.type == "date"]
@@ -785,15 +877,235 @@ def test_the_operational_dates_remain_blank_on_a_new_row(sample_workbook):
         assert sheet.cell(row=2, column=col).value is None
 
 
+# --- The Status column is a formula, not a typed-in word ---------------------
+#
+# Status used to be written as a word at the moment the file was made, which
+# made it a photograph: true when taken and stale from then on. The cell now
+# holds a formula that reads the three dates beside it, so Excel works the
+# Status out every time the workbook recalculates -- including the day she
+# fills a date in months later.
+
+# The rule exactly as the specification states it, written out here rather than
+# imported from the generator: the test says what the formula must be, and the
+# generator has to agree with it. ``{row}`` is the row the cell sits on.
+STATUS_FORMULA = (
+    '=IF(AND(LEN(TRIM(I{row}&""))>0,TRIM(I{row}&"")<>"-"),"Completed",'
+    'IF(AND(LEN(TRIM(G{row}&""))>0,TRIM(G{row}&"")<>"-",'
+    'LEN(TRIM(H{row}&""))>0,TRIM(H{row}&"")<>"-"),"Ongoing","On Hold"))'
+)
+
+
+def _status_formula_for(row: int) -> str:
+    """The formula the Status cell on ``row`` must hold."""
+    return STATUS_FORMULA.format(row=row)
+
+
+def _cell_refs(formula: str) -> set[str]:
+    """Every cell reference in a formula, e.g. ``{"G2", "H2", "I2"}``.
+
+    The words in the formula -- ``Completed``, ``TRIM``, ``On Hold`` -- carry no
+    digits, so anything that matches a reference really is one.
+    """
+    return set(re.findall(r"[A-Z]{1,3}[1-9][0-9]*", formula))
+
+
+def _excel_status(sheet, row: int) -> str:
+    """What Excel will show on ``row`` once it has calculated the formula.
+
+    The formula reads only G, H and I of its own row, treats a blank, a
+    whitespace-only cell and ``-`` as empty, and lets a Completion Date win over
+    everything. This mirrors that evaluation over the values actually written
+    to the sheet, so a test can say what a set of dates means without opening
+    Excel to find out.
+    """
+
+    def filled(column: int) -> bool:
+        value = sheet.cell(row=row, column=column).value
+        if value is None:
+            return False
+        if isinstance(value, str):
+            text = value.strip()
+            return text != "" and text != "-"
+        return True  # a real date value counts, whatever its serial number is
+
+    if filled(9):
+        return "Completed"
+    if filled(7) and filled(8):
+        return "Ongoing"
+    return "On Hold"
+
+
+def test_the_status_cell_is_a_formula_not_a_typed_in_word(sample_workbook):
+    """Excel works the Status out; the file never types one in.
+
+    A word written at generation time is only true at that moment. The formula
+    reads the three dates on every recalculation, so filling in the Completion
+    Date later turns the row green without anybody touching column J.
+    """
+    sheet = sample_workbook["Summary"]
+
+    assert sheet.cell(row=2, column=10).value == _status_formula_for(2)
+
+
+def test_the_status_formula_reads_only_the_three_operational_columns(sample_workbook):
+    """Sequence Number, the description and the quantities cannot move the Status."""
+    formula = sample_workbook["Summary"].cell(row=2, column=10).value
+
+    assert _cell_refs(formula) == {"G2", "H2", "I2"}
+
+
+def test_every_status_cell_holds_the_formula_for_its_own_row():
+    """No row reads another row's dates, and none is left as a static word."""
+    request = _combined(
+        [
+            _existing(sequence_number="001", start_date="01/10/2026"),
+            _existing(sequence_number="002"),
+            _existing(sequence_number="003", completion_date="20/11/2026"),
+        ],
+        ("008", _quotation("New Client", "New Project", [(1, "new-1", 1.0, "m2")])),
+    )
+
+    sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
+
+    for row in range(2, sheet.max_row + 1):
+        formula = sheet.cell(row=row, column=10).value
+        assert formula == _status_formula_for(row), f"row {row} does not carry the formula"
+        assert _cell_refs(formula) == {f"G{row}", f"H{row}", f"I{row}"}
+
+
+@pytest.mark.parametrize(
+    ("installation_schedule", "start_date", "completion_date", "expected"),
+    [
+        pytest.param("October 2026", "", None, "On Hold", id="schedule-only"),
+        pytest.param("", "02/10/2026", None, "On Hold", id="start-date-only"),
+        pytest.param("", "", "20/11/2026", "Completed", id="completion-date-only"),
+        pytest.param("October 2026", "02/10/2026", None, "Ongoing", id="scheduled-and-started"),
+        pytest.param(
+            "October 2026", "02/10/2026", "20/11/2026", "Completed", id="finished-beats-ongoing"
+        ),
+        pytest.param("October 2026", "-", None, "On Hold", id="dash-start-counts-as-empty"),
+        pytest.param("  ", "  ", "  ", "On Hold", id="whitespace-counts-as-empty"),
+        pytest.param(
+            "October 2026", "02/10/2026", "-", "Ongoing", id="dash-completion-counts-as-empty"
+        ),
+    ],
+)
+def test_the_formula_means_what_the_dates_mean(
+    installation_schedule, start_date, completion_date, expected
+):
+    """One row per combination of the three dates, against what Excel calculates."""
+    request = _combined(
+        [
+            _existing(
+                installation_schedule=installation_schedule,
+                start_date=start_date,
+                completion_date=completion_date,
+            )
+        ]
+    )
+
+    sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
+
+    assert sheet.cell(row=2, column=10).value == _status_formula_for(2)
+    assert _excel_status(sheet, 2) == expected
+
+
+def test_the_formula_stops_at_the_last_row_that_exists():
+    """The buffer below the data stays a range, not a set of invented rows.
+
+    The colours and the date validation reach rows she may add by hand later,
+    and they have never created cells: the data range stays exact. So the
+    formula belongs to the rows that are really there, and no row is conjured
+    into existence below the data just to hold one.
+    """
+    request = _combined(
+        [
+            _existing(sequence_number="001"),
+            _existing(sequence_number="002"),
+        ],
+        ("008", _quotation("New Client", "New Project", [(1, "new-1", 1.0, "m2")])),
+    )
+
+    sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
+
+    last_row = sheet.max_row
+    assert last_row == 4  # header + two existing rows + one quotation row
+    for row in range(2, last_row + 1):
+        assert sheet.cell(row=row, column=10).value == _status_formula_for(row)
+    # And the ranges that reach past the data are untouched by that.
+    buffered = last_row + OpenpyxlWorkbookGenerator.BUFFER_ROWS
+    assert {sqref for sqref, _ in _status_rules(sheet)} == {f"A2:J{buffered}"}
+
+
+@pytest.mark.parametrize("mode", ["quotation-only", "monitor-only", "combined", "edited"])
+def test_every_export_mode_writes_the_formula_and_real_dates(mode):
+    """All four ways a workbook leaves this application behave the same.
+
+    A quotation on its own, a monitoring file on its own, the two together, and
+    a row whose dates the user corrected before confirming: every one of them
+    carries the Status formula on each row and the agreed date format on each
+    date column.
+    """
+    generator = OpenpyxlWorkbookGenerator()
+
+    if mode == "quotation-only":
+        sheet = _summary(
+            generator.generate(_quotation("Client", "Project", [(1, "item", 1.0, "m2")]))
+        )
+    elif mode == "monitor-only":
+        sheet = _summary(
+            generator.generate_consolidated(_combined([_existing(start_date="02/10/2026")]))
+        )
+    elif mode == "combined":
+        sheet = _summary(
+            generator.generate_consolidated(
+                _combined(
+                    [_existing(start_date="02/10/2026")],
+                    ("008", _quotation("New Client", "New Project", [(1, "new-1", 1.0, "m2")])),
+                )
+            )
+        )
+    else:  # edited
+        sheet = _summary(
+            generator.generate_consolidated(
+                _combined(
+                    [
+                        _existing(
+                            installation_schedule="October 2026",
+                            start_date="02/10/2026",
+                            completion_date="20/11/2026",
+                        )
+                    ]
+                )
+            )
+        )
+
+    for row in range(2, sheet.max_row + 1):
+        assert sheet.cell(row=row, column=10).value == _status_formula_for(row)
+        for col in (7, 8, 9):
+            assert sheet.cell(row=row, column=col).number_format == "dd/mm/yyyy"
+
+    if mode == "quotation-only":
+        # A quotation brings no dates, so none is invented for it.
+        for col in (7, 8, 9):
+            assert sheet.cell(row=2, column=col).value is None
+    else:
+        assert _as_date(sheet.cell(row=2, column=8).value) == date(2026, 10, 2)
+
+    if mode == "edited":
+        assert _as_date(sheet.cell(row=2, column=9).value) == date(2026, 11, 20)
+
+
 def test_a_new_row_reports_the_status_that_follows_from_blank_dates(sample_workbook):
     """Three empty operational fields mean one thing: the work is on hold.
 
     The Status column used to be left blank for the user to choose from a
-    dropdown. Nothing is left to choose now, and a blank row would read as
-    "not yet decided" when the honest answer is already known.
+    dropdown, and then written as a word at generation time. Neither is a
+    decision left to make: the cell holds the formula, and three blank fields
+    are what that formula reads as On Hold.
     """
     sheet = sample_workbook["Summary"]
-    assert sheet.cell(row=2, column=10).value == "On Hold"
+    assert sheet.cell(row=2, column=10).value == _status_formula_for(2)
 
 
 # ---------------------------------------------------------------------------
@@ -913,7 +1225,8 @@ def test_an_existing_row_preserves_all_ten_fields():
 
     sheet = _summary(generator.generate_consolidated(request))
 
-    assert [sheet.cell(row=2, column=c).value for c in range(1, 11)] == [
+    values = [sheet.cell(row=2, column=c).value for c in range(1, 10)]
+    assert values[:8] == [
         "007",
         "EXISTING CLIENT",
         "EXISTING PROJECT",
@@ -922,9 +1235,11 @@ def test_an_existing_row_preserves_all_ten_fields():
         "m2",
         "15-20 Nov 2026",
         "to be agreed",
-        "20/11/2026",
-        "Completed",
     ]
+    # The Completion Date is the date it names, stored as a real date value.
+    assert _as_date(values[8]) == date(2026, 11, 20)
+    # The tenth column is the formula that reads those dates, not a word.
+    assert sheet.cell(row=2, column=10).value == _status_formula_for(2)
 
 
 def test_an_existing_sequence_number_stays_text_with_its_leading_zero():
@@ -967,16 +1282,18 @@ def test_an_existing_row_keeps_its_dates_exactly_as_they_were():
     assert sheet.cell(row=2, column=7).value == "15-20 Nov 2026"
     assert sheet.cell(row=2, column=8).value == "to be agreed"
     assert sheet.cell(row=2, column=9).value is None
-    # Scheduled and started, nothing completed: the row says Ongoing whatever
-    # the cell it came from used to say.
-    assert sheet.cell(row=2, column=10).value == "Ongoing"
+    # Scheduled and started, nothing completed: the formula reads Ongoing off
+    # those cells, whatever the cell it came from used to say.
+    assert sheet.cell(row=2, column=10).value == _status_formula_for(2)
 
 
 def test_a_status_that_disagrees_with_the_dates_is_rewritten_on_the_way_out():
     """The file is not the source of the Status; its dates are.
 
     A workbook may still hold a Status somebody chose before this rule existed.
-    Writing it through would reproduce the mistake in every new export.
+    Writing it through would reproduce the mistake in every new export, so the
+    cell is replaced by the formula that reads this row's dates instead -- a
+    stale word never reaches the file at all.
     """
     generator = OpenpyxlWorkbookGenerator()
     request = _combined(
@@ -993,7 +1310,9 @@ def test_a_status_that_disagrees_with_the_dates_is_rewritten_on_the_way_out():
 
     sheet = _summary(generator.generate_consolidated(request))
 
-    assert sheet.cell(row=2, column=10).value == "Ongoing"
+    assert sheet.cell(row=2, column=10).value == _status_formula_for(2)
+    # And the dates it reads are the ones written above, not the claim.
+    assert _excel_status(sheet, 2) == "Ongoing"
 
 
 def test_a_blank_operational_field_on_an_existing_row_stays_blank():
@@ -1008,8 +1327,8 @@ def test_a_blank_operational_field_on_an_existing_row_stays_blank():
 
     for col in (7, 8, 9):
         assert sheet.cell(row=2, column=col).value in (None, "")
-    # Nothing set anywhere, so the row reports the one status that means that.
-    assert sheet.cell(row=2, column=10).value == "On Hold"
+    # Nothing set anywhere, so the formula reads the one status that means that.
+    assert sheet.cell(row=2, column=10).value == _status_formula_for(2)
 
 
 def test_new_quotation_rows_start_with_no_dates_and_the_status_that_means_it():
@@ -1018,8 +1337,8 @@ def test_new_quotation_rows_start_with_no_dates_and_the_status_that_means_it():
     A quotation is never a source for Installation Schedule, Start Date or
     Completion Date -- they are not in the PDF and are not guessed from it --
     so those cells stay empty. The Status that follows from three empty fields
-    is written for her rather than left blank, because there is no dropdown left
-    to choose one from.
+    is the formula's own answer, written into every row rather than left blank,
+    because there is no dropdown left to choose one from.
     """
     generator = OpenpyxlWorkbookGenerator()
     request = _combined(
@@ -1031,7 +1350,7 @@ def test_new_quotation_rows_start_with_no_dates_and_the_status_that_means_it():
 
     for col in (7, 8, 9):
         assert sheet.cell(row=3, column=col).value is None
-    assert sheet.cell(row=3, column=10).value == "On Hold"
+    assert sheet.cell(row=3, column=10).value == _status_formula_for(3)
 
 
 def test_an_existing_row_with_a_long_description_gets_a_tall_row():

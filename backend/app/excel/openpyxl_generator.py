@@ -11,10 +11,11 @@ The generator:
 - Uses the manual Sequence Number when one is supplied, else leaves it blank
 - Writes one row per quotation item, existing workbook rows first and unchanged
 - Leaves Installation Schedule, Start Date and Completion Date blank on a
-  quotation row, and carries them over as found on a row that came from the
-  workbook
-- Works out Status from those three fields for every row, so the colour of the
-  row follows the dates rather than a value somebody typed
+  quotation row, and carries them over on a row that came from the workbook,
+  storing a date written out as dd/mm/yyyy as a real Excel date value so the
+  number format decides how it reads
+- Writes Status as a formula over those three fields on every row, so the
+  colour of the row follows the dates rather than a value somebody typed
 - Makes the sheet usable straight away: sized columns, wrapped descriptions,
   a frozen header, an AutoFilter, date-formatted operational cells, dynamic
   Status colours, and a line between each client/project group
@@ -28,12 +29,14 @@ frontend, in one place, and this module must not grow a second opinion about it.
 Nothing is ever inferred for a quotation: Installation Schedule, Start Date and
 Completion Date stay empty and are filled in by hand (AGENTS.md sections 6
 and 7). A row carried over from a workbook already has them, and keeps them.
-Status is the exception, and it is not a value that arrives with a row: it is
-derived from the three, so a cell that disagrees with its own dates is rewritten
-rather than copied into the next version of the file.
+Status is the exception, and it never arrives with a row: every Status cell
+holds the formula that reads its own three dates, so a cell claiming something
+those dates do not support cannot be carried into the next version of the file
+at all -- it is recalculated instead.
 """
 
 import math
+from datetime import datetime
 from io import BytesIO
 
 from openpyxl import Workbook
@@ -42,7 +45,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
-from app.models.monitor import ImportedMonitorRow, derive_status
+from app.models.monitor import ImportedMonitorRow
 from app.models.quotation import Quotation
 from app.models.workbook import ConsolidatedWorkbookRequest
 
@@ -87,7 +90,22 @@ class OpenpyxlWorkbookGenerator:
     }
 
     # One consistent, human-readable date format for all the date columns.
-    DATE_FORMAT = "DD/MM/YYYY"
+    # A date cell holds a real date value and this is how Excel renders it, so
+    # the workbook decides what a date reads rather than the machine it is
+    # opened on.
+    DATE_FORMAT = "dd/mm/yyyy"
+
+    # The Status cell is a formula, not a word written at generation time.
+    # A word is only true at the moment it is typed; this reads the three
+    # operational columns of its own row every time Excel recalculates, so the
+    # Status follows the row for as long as the file exists. A blank cell, a
+    # whitespace-only cell and "-" all count as empty, in that order of
+    # priority, exactly as the application's own derivation rule reads them.
+    STATUS_FORMULA = (
+        '=IF(AND(LEN(TRIM(I{row}&""))>0,TRIM(I{row}&"")<>"-"),"Completed",'
+        'IF(AND(LEN(TRIM(G{row}&""))>0,TRIM(G{row}&"")<>"-",'
+        'LEN(TRIM(H{row}&""))>0,TRIM(H{row}&"")<>"-"),"Ongoing","On Hold"))'
+    )
 
     # The exact status the derivation rule can produce. Never chosen by a user
     # and never read from a file: this is the list the rule writes.
@@ -118,9 +136,9 @@ class OpenpyxlWorkbookGenerator:
     def generate(self, quotation: Quotation) -> bytes:
         """Generate .xlsx workbook bytes from confirmed quotation data.
 
-        Creates a Summary worksheet with one row per quotation item. Manual
-        operational fields (Sequence Number, Installation Schedule, Start Date,
-        Status) are left blank.
+        Creates a Summary worksheet with one row per quotation item. Sequence
+        Number and the three operational dates are left blank, and Status holds
+        the formula that works itself out from those dates.
 
         Args:
             quotation: Confirmed quotation data that the user has reviewed/edited
@@ -136,9 +154,10 @@ class OpenpyxlWorkbookGenerator:
         Creates a Summary worksheet holding the rows of a monitoring workbook the
         user already opened, followed by one row per line item of every new
         quotation. Each quotation's items share the same sequence number.
-        Manual operational fields (Installation Schedule, Start Date, Status)
-        are left blank on a quotation row, and written as they stand on a row
-        that came from the workbook.
+        Installation Schedule, Start Date and Completion Date are left blank on
+        a quotation row, and written as they stand on a row that came from the
+        workbook. Status is the formula on every row, so it follows those dates
+        instead of being written down.
 
         Args:
             request: The existing rows to carry over, and the confirmed
@@ -216,7 +235,8 @@ class OpenpyxlWorkbookGenerator:
         Maps quotation fields to the agreed column structure. ``sequence_number``
         is the manual group value, or ``None`` for the single-quotation path.
         The operational dates are left blank because they are not derived from
-        the quotation PDF, and Status is whatever three blank dates mean.
+        the quotation PDF, and Status is the formula that reads those three
+        blank cells -- which is to say, whatever three blank dates mean.
         """
         self._write_row(
             sheet,
@@ -230,7 +250,6 @@ class OpenpyxlWorkbookGenerator:
                 "Installation Schedule": None,  # Not in the PDF - leave blank
                 "Start Date": None,  # Not in the PDF - leave blank
                 "Completion Date": None,  # Not in the PDF - leave blank
-                "Status": derive_status(None, None, None),
             },
             item.description,
         )
@@ -245,10 +264,10 @@ class OpenpyxlWorkbookGenerator:
         is something the user wrote and is not a date to be tidied, and a blank cell
         is a blank cell rather than a gap to be filled.
 
-        Status is the one column not written through. It follows from the three
-        fields above it, so a cell that claims the work is finished while the
-        Completion Date is empty is corrected here rather than carried into the
-        next version of the file.
+        Status is the one column not written through at all. It becomes the
+        formula that reads the three fields above it, so a cell claiming the
+        work is finished while the Completion Date is empty corrects itself on
+        the next recalculation instead of carrying the claim forward.
 
         The Sequence Number is an identifier and is written as the string it
         already is, leading zeros and all. Nothing here works out, compares or
@@ -267,9 +286,6 @@ class OpenpyxlWorkbookGenerator:
                 "Installation Schedule": row.installation_schedule,
                 "Start Date": row.start_date,
                 "Completion Date": row.completion_date,
-                "Status": derive_status(
-                    row.installation_schedule, row.start_date, row.completion_date
-                ),
             },
             row.product_description,
         )
@@ -282,11 +298,23 @@ class OpenpyxlWorkbookGenerator:
         Column order comes from ``COLUMNS`` rather than from the dict, and the
         cells are formatted by name, so neither the order of the mapping nor the
         two callers can drift apart.
+
+        Two columns are not taken from the dict. Status becomes the formula that
+        reads this row's own dates, because a status written down here would be
+        true only until the dates changed. The three operational columns go
+        through :func:`_excel_date` first, so a date written out as text is
+        stored as the date it names and the format can render it.
         """
         row_idx = sheet.max_row + 1
 
         for col_idx, column_name in enumerate(self.COLUMNS, start=1):
-            cell = sheet.cell(row=row_idx, column=col_idx, value=row_data[column_name])
+            if column_name == "Status":
+                value = self.STATUS_FORMULA.format(row=row_idx)
+            elif column_name in self.OPERATIONAL_FIELDS:
+                value = _excel_date(row_data[column_name])
+            else:
+                value = row_data[column_name]
+            cell = sheet.cell(row=row_idx, column=col_idx, value=value)
             self._format_data_cell(cell, column_name)
 
         height = self._estimate_row_height(description)
@@ -468,3 +496,27 @@ def _group_text(value: object) -> str:
     if value is None:
         return ""
     return str(value).strip().casefold()
+
+
+def _excel_date(value: object) -> object:
+    """One operational field as Excel should hold it.
+
+    A date written out the way this application writes dates -- ``02/10/2026``
+    -- becomes a real date value. That is the whole point: a number format only
+    ever applies to a number, so a date stored as text sits in the cell with a
+    format that cannot govern it, and the display is left to the machine that
+    opens the file. Stored as the date it names, the cell holds 2 October 2026
+    and the format renders it as ``02/10/2026`` everywhere.
+
+    Everything else is the user's own words and is written through untouched:
+    a schedule such as ``15-20 Nov 2026``, a note such as ``to be agreed``, a
+    dash, a blank, or a two-digit year, none of which is this date format and
+    none of which is reinterpreted as one.
+    """
+    if not isinstance(value, str):
+        return value
+    try:
+        parsed = datetime.strptime(value.strip(), "%d/%m/%Y")
+    except ValueError:
+        return value
+    return parsed.date()

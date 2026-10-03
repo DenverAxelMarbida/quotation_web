@@ -226,7 +226,7 @@ def test_a_monitor_only_export_keeps_the_rows_as_they_stand() -> None:
         "Completion Date",
         "Status",
     ]
-    assert first == [
+    assert first[:9] == [
         "007",
         "SAMPLE CLIENT TRADING L.L.C",
         "MARINA BAY TOWER",
@@ -236,8 +236,38 @@ def test_a_monitor_only_export_keeps_the_rows_as_they_stand() -> None:
         "15-20 Nov 2026",
         "2026-11-15",
         None,  # Still unfinished, so still no completion date
-        "Ongoing",
     ]
+    # Status is worked out by Excel from those dates, so the cell carries the
+    # formula and its three outcomes rather than a word picked at export time.
+    status = first[9]
+    assert status.startswith("=IF(AND(LEN(TRIM(I2")
+    assert '"Completed"' in status and '"Ongoing"' in status and '"On Hold"' in status
+
+
+def test_the_dates_in_an_exported_row_are_real_excel_dates() -> None:
+    # A date written out the way this application writes dates has to reach the
+    # file as the date it names. Stored as text, a date sits under a number
+    # format that cannot govern it and the display is left to whichever machine
+    # opens the file; stored as a date, the cell's own format decides.
+    from datetime import datetime
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    rows = existing_monitor_rows()
+    edited = rows[0].model_copy(update={"start_date": "02/10/2026"})
+    response = client.post(
+        "/api/quotations/generate-consolidated-excel",
+        json={"quotations": [], "existing_rows": [edited.model_dump(mode="json")]},
+    )
+
+    assert response.status_code == 200
+
+    sheet = load_workbook(BytesIO(response.content))["Summary"]
+    cell = sheet.cell(row=2, column=8)
+
+    assert cell.value == datetime(2026, 10, 2)
+    assert cell.number_format == "dd/mm/yyyy"
 
 
 def test_generate_consolidated_merges_an_imported_monitor_with_new_quotations() -> None:
