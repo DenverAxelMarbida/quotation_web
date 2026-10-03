@@ -316,13 +316,21 @@ These remain under the mother's control:
 - Sequence Number
 - Installation Schedule
 - Start Date
-- Status
+- Completion Date
 
 Do not guess them.
 
 For example:
 
 > The existence of a quotation does NOT mean the project is Ongoing.
+
+### Derived by the application
+
+- Status
+
+Status is neither extracted from the quotation nor chosen by hand. It is derived
+from Installation Schedule, Start Date and Completion Date using the rule in
+section 7.
 
 ---
 
@@ -342,7 +350,8 @@ Required coworker-facing fields:
 6. Unit of Measurement
 7. Installation Schedule
 8. Start Date
-9. Status
+9. Completion Date
+10. Status
 
 ### Sheet 2 — Raw Data / Input
 
@@ -358,7 +367,19 @@ Preserve the existing workbook structure as much as practical. Do not redesign i
 - Ongoing = ORANGE
 - Completed = GREEN
 
-Status is manually controlled by the mother.
+Status is automatically derived from the operational fields, in this priority
+order:
+
+1. Completion Date filled → `Completed`
+2. Otherwise, Installation Schedule AND Start Date both filled → `Ongoing`
+3. Otherwise → `On Hold`
+
+For this determination, `null`, `undefined`, empty or whitespace-only values,
+and `"-"` are treated as empty.
+
+Status must not be manually selected or manually overridden. It is never read
+from a workbook cell as business data: a value that disagrees with its own dates
+is corrected rather than kept.
 
 Prefer Excel conditional formatting where practical.
 
@@ -374,7 +395,7 @@ The generator must:
 - Keep the same Sequence for all line items belonging to one quotation.
 - Preserve quotation/SR references internally where useful.
 - Avoid accidentally overwriting existing projects/data.
-- Keep Installation Schedule, Start Date, and Status under human control.
+- Keep Installation Schedule, Start Date, and Completion Date under human control.
 
 Never silently overwrite existing monitoring data.
 
