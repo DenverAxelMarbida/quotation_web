@@ -15,8 +15,10 @@ import type { SourceInfo } from './quotation'
 /**
  * Mirrors `MonitorStatus` in `backend/app/models/monitor.py`.
  *
- * `''` is a real value, not a placeholder: a row can have no status yet, and
- * the user chooses that in Excel rather than the application.
+ * `''` remains part of the type because the backend's own type still allows an
+ * unset status. Nothing in this application produces it, though: a Status is
+ * worked out from the three dates it follows (see `state/status.ts`), and the
+ * rule always has an answer.
  */
 export type MonitorStatus = 'On Hold' | 'Ongoing' | 'Completed' | ''
 
@@ -39,6 +41,16 @@ export type ImportedMonitorRow = {
   installation_schedule: string
   /** Start Date as the workbook displays it, or null when the cell is empty. */
   start_date: string | null
+  /** Completion Date as the workbook displays it, or null when the cell is empty. */
+  completion_date: string | null
+  /**
+   * What the three dates above mean, not what a cell happened to say.
+   *
+   * Sent back with the row, but not trusted on the way in: the backend
+   * recomputes it from the dates when it writes a workbook, and this
+   * application recomputes it when the dates are edited, so the value can only
+   * ever agree with them.
+   */
   status: MonitorStatus
 }
 

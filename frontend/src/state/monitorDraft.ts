@@ -22,9 +22,15 @@
  * - What was read is not reformatted. A Sequence Number is an identifier, and it
  *   is not even in `EditableMonitorField`, so no action can change it; a Start
  *   Date is stored as the text it arrived as.
+ *
+ * A third rule covers Status, and it works the other way round: a Status is not
+ * a field the user sets, so it is not editable either. It is recomputed from the
+ * three fields it follows (`state/status.ts`) whenever one of them changes, so
+ * what the table shows and what the export will write can never drift apart.
  */
 
-import type { ImportedMonitor, ImportedMonitorRow, MonitorStatus } from '../types/monitor'
+import type { ImportedMonitor, ImportedMonitorRow } from '../types/monitor'
+import { deriveStatus } from './status'
 
 /**
  * The cells a person may change.
@@ -32,6 +38,10 @@ import type { ImportedMonitor, ImportedMonitorRow, MonitorStatus } from '../type
  * `sequence_number` is deliberately absent. It is the identifier that ties a row
  * to a quotation, and Phase 5B does not renumber anything, so excluding it here
  * makes it non-editable by construction rather than by hiding a control.
+ *
+ * `status` is absent for a different reason: it is not an input at all. It is
+ * worked out from the three fields below it, and offering it for editing would
+ * let a row claim something its own dates contradict.
  */
 export type EditableMonitorField =
   | 'client_name'
@@ -41,7 +51,7 @@ export type EditableMonitorField =
   | 'unit_of_measurement'
   | 'installation_schedule'
   | 'start_date'
-  | 'status'
+  | 'completion_date'
 
 export type MonitorDraftState = {
   /** The working copy: the rows as they stand while being edited. */
@@ -57,13 +67,28 @@ export type MonitorDraftAction =
   | { type: 'save' }
   | { type: 'cancel' }
 
-/** The status values the workbook's dropdown offers, plus leaving it blank. */
-const ALLOWED_STATUSES: readonly MonitorStatus[] = ['On Hold', 'Ongoing', 'Completed', '']
+/** The three fields the Status is derived from, as row keys. */
+const OPERATIONAL_FIELDS = ['installation_schedule', 'start_date', 'completion_date'] as const
+
+/**
+ * A copy of one imported row whose Status agrees with its own dates.
+ *
+ * The backend already derives it, so this is normally a no-op. It exists so the
+ * editor can never show a Status that contradicts the dates beside it, whatever
+ * the rows it was handed happened to contain -- a workbook saved before this
+ * rule existed, or a response from a version that did not apply it.
+ */
+function withDerivedStatus(row: ImportedMonitorRow): ImportedMonitorRow {
+  return {
+    ...row,
+    status: deriveStatus(row.installation_schedule, row.start_date, row.completion_date),
+  }
+}
 
 export function createMonitorDraft(monitor: ImportedMonitor | null): MonitorDraftState {
   // Copied row by row, so editing one row cannot reach the object the import
   // returned and a later re-read still sees the file's own values.
-  const rows = (monitor?.rows ?? []).map((row) => ({ ...row }))
+  const rows = (monitor?.rows ?? []).map(withDerivedStatus)
   return { rows, saved: rows.map((row) => ({ ...row })) }
 }
 
@@ -88,6 +113,7 @@ function isSameRow(a: ImportedMonitorRow | undefined, b: ImportedMonitorRow | un
     a.unit_of_measurement === b.unit_of_measurement &&
     a.installation_schedule === b.installation_schedule &&
     a.start_date === b.start_date &&
+    a.completion_date === b.completion_date &&
     a.status === b.status
   )
 }
@@ -106,12 +132,34 @@ function toQuantity(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-/** `null` for anything outside the workbook's own list, which is then ignored. */
-function toStatus(value: string): MonitorStatus | null {
-  return (ALLOWED_STATUSES as readonly string[]).includes(value) ? (value as MonitorStatus) : null
+/** `null` for an empty cell, so clearing the box round-trips to exactly that. */
+function toNullableText(value: string): string | null {
+  return value === '' ? null : value
 }
 
+/**
+ * Write one cell, then bring the Status back into line with the dates.
+ *
+ * Only an edit to one of the three operational fields can change the answer, so
+ * only those trigger the recomputation; editing a client name leaves the Status
+ * exactly as it was, because the same dates still say the same thing.
+ */
 function setField(
+  row: ImportedMonitorRow,
+  field: EditableMonitorField,
+  value: string,
+): ImportedMonitorRow {
+  const edited = editCell(row, field, value)
+  const operational = (OPERATIONAL_FIELDS as readonly string[]).includes(field)
+  if (!operational) return edited
+
+  return {
+    ...edited,
+    status: deriveStatus(edited.installation_schedule, edited.start_date, edited.completion_date),
+  }
+}
+
+function editCell(
   row: ImportedMonitorRow,
   field: EditableMonitorField,
   value: string,
@@ -121,24 +169,23 @@ function setField(
     case 'project_name':
     case 'product_description':
     case 'unit_of_measurement':
-    case 'installation_schedule':
       // Kept as typed, including an empty string. A blank here is a real state
       // for a workbook that has not been scheduled yet.
       return { ...row, [field]: value }
     case 'quantity':
       return { ...row, quantity: toQuantity(value) }
+    case 'installation_schedule':
+      // Kept as typed too: "to be agreed" is what the user wrote, not a date to
+      // be corrected, and a blank means the job has not been scheduled.
+      return { ...row, installation_schedule: value }
     case 'start_date':
       // Stored as the text it is. `null` is how the importer represents an empty
       // cell, so clearing the box round-trips back to exactly that.
-      return { ...row, start_date: value === '' ? null : value }
-    case 'status': {
-      const status = toStatus(value)
-      // The dropdown cannot offer anything else, so this only guards the reducer
-      // being called from somewhere else. An unknown value is ignored rather
-      // than stored, because the workbook's own list is the contract.
-      if (status === null) return row
-      return { ...row, status }
-    }
+      return { ...row, start_date: toNullableText(value) }
+    case 'completion_date':
+      // The same treatment as Start Date, for the same reason: it is a date the
+      // user wrote or nothing at all.
+      return { ...row, completion_date: toNullableText(value) }
   }
 }
 

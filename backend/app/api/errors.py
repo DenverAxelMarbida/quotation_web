@@ -21,7 +21,6 @@ from app.services.errors import (
     ExtractionError,
     ExtractionFailedError,
     InvalidSequenceNumberError,
-    InvalidStatusValueError,
     MissingColumnsError,
     MissingSummarySheetError,
     MonitorImportError,
@@ -95,10 +94,6 @@ MONITOR_IMPORT_CATALOGUE: dict[type[MonitorImportError], tuple[int, str]] = {
     InvalidSequenceNumberError: (
         422,
         "This monitoring sheet has a row the application cannot read.",
-    ),
-    InvalidStatusValueError: (
-        422,
-        "This monitoring sheet has a Status value the application does not use.",
     ),
 }
 

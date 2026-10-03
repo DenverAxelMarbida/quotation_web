@@ -10,11 +10,14 @@ The generator:
   set added to the rows of a monitoring workbook the user already opened
 - Uses the manual Sequence Number when one is supplied, else leaves it blank
 - Writes one row per quotation item, existing workbook rows first and unchanged
-- Leaves Installation Schedule, Start Date and Status blank on a quotation row,
-  and carries them over as found on a row that came from the workbook
+- Leaves Installation Schedule, Start Date and Completion Date blank on a
+  quotation row, and carries them over as found on a row that came from the
+  workbook
+- Works out Status from those three fields for every row, so the colour of the
+  row follows the dates rather than a value somebody typed
 - Makes the sheet usable straight away: sized columns, wrapped descriptions,
-  a frozen header, an AutoFilter, a Status dropdown, dynamic Status colours and
-  date-formatted Installation Schedule / Start Date cells
+  a frozen header, an AutoFilter, date-formatted operational cells, dynamic
+  Status colours, and a line between each client/project group
 - Returns workbook bytes suitable for download
 
 Nothing here ever works out a Sequence Number. One is assigned to a quotation
@@ -23,8 +26,11 @@ every sequence is written as the opaque string it is. Numbering lives in the
 frontend, in one place, and this module must not grow a second opinion about it.
 
 Nothing is ever inferred for a quotation: Installation Schedule, Start Date and
-Status stay empty and are filled in by hand in Excel (AGENTS.md sections 6
+Completion Date stay empty and are filled in by hand (AGENTS.md sections 6
 and 7). A row carried over from a workbook already has them, and keeps them.
+Status is the exception, and it is not a value that arrives with a row: it is
+derived from the three, so a cell that disagrees with its own dates is rewritten
+rather than copied into the next version of the file.
 """
 
 import math
@@ -32,11 +38,11 @@ from io import BytesIO
 
 from openpyxl import Workbook
 from openpyxl.formatting.rule import FormulaRule
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
-from app.models.monitor import ImportedMonitorRow
+from app.models.monitor import ImportedMonitorRow, derive_status
 from app.models.quotation import Quotation
 from app.models.workbook import ConsolidatedWorkbookRequest
 
@@ -44,7 +50,10 @@ from app.models.workbook import ConsolidatedWorkbookRequest
 class OpenpyxlWorkbookGenerator:
     """Generates Excel workbooks from confirmed quotation data."""
 
-    # Column structure as specified in AGENTS.md section 7. Order is fixed.
+    # Column structure as specified in AGENTS.md section 7. Order is fixed, and
+    # Completion Date sits between Start Date and Status because those are the
+    # three fields Status is worked out from: reading left to right gives the
+    # evidence and then the conclusion.
     COLUMNS = [
         "Sequence Number",
         "Client Name",
@@ -54,8 +63,13 @@ class OpenpyxlWorkbookGenerator:
         "Unit of Measurement",
         "Installation Schedule",
         "Start Date",
+        "Completion Date",
         "Status",
     ]
+
+    # The three fields the Status is derived from, in the order the rule reads
+    # them. Nothing else may change a Status.
+    OPERATIONAL_FIELDS = ("Installation Schedule", "Start Date", "Completion Date")
 
     # Practical widths (Excel column-width units). Product Description gets the
     # most room because ERP descriptions are long; Quantity and Unit stay narrow.
@@ -68,13 +82,15 @@ class OpenpyxlWorkbookGenerator:
         "Unit of Measurement": 18,
         "Installation Schedule": 20,
         "Start Date": 15,
+        "Completion Date": 16,
         "Status": 16,
     }
 
-    # One consistent, human-readable date format for both date columns.
+    # One consistent, human-readable date format for all the date columns.
     DATE_FORMAT = "DD/MM/YYYY"
 
-    # The exact status options offered by the dropdown. Never assigned by code.
+    # The exact status the derivation rule can produce. Never chosen by a user
+    # and never read from a file: this is the list the rule writes.
     STATUS_VALUES = ("On Hold", "Ongoing", "Completed")
 
     # Fill + font colours used by the dynamic conditional formatting rules.
@@ -85,8 +101,10 @@ class OpenpyxlWorkbookGenerator:
     }
 
     # Validation and conditional formatting extend a buffer of rows below the
-    # data so the mother can add rows by hand and keep the dropdowns/colours.
-    # These ranges do not create cells, so the data range stays exact.
+    # data so the mother can add rows by hand and keep the colours. Group lines
+    # deliberately do not: a line on an empty row would look like a group that
+    # is not there yet. These ranges do not create cells, so the data range
+    # stays exact.
     BUFFER_ROWS = 100
 
     # Height of one wrapped line of text, used to size a row so a long Product
@@ -148,9 +166,10 @@ class OpenpyxlWorkbookGenerator:
         always lands below the workbook it was added to, because its sequence
         number is the highest one in the file.
 
-        Every workbook-level rule -- widths, frozen header, filter, dropdowns,
-        date validation and the status colours -- is applied once, after all the
-        data rows exist, so the two sources share one set of ranges.
+        Every workbook-level rule -- widths, frozen header, filter, date
+        validation, status colours and the group lines -- is applied once, after
+        all the data rows exist, so the two sources share one set of ranges and
+        a group split across the boundary is still seen as one group.
         """
         workbook = Workbook()
         sheet = workbook.active
@@ -170,9 +189,9 @@ class OpenpyxlWorkbookGenerator:
         self._apply_column_widths(sheet)
         sheet.freeze_panes = "A2"
         self._apply_auto_filter(sheet, last_row)
-        self._apply_status_validation(sheet, last_row)
         self._apply_date_validation(sheet, last_row)
         self._apply_status_conditional_formatting(sheet, last_row)
+        self._apply_group_borders(sheet, last_row)
 
         output = BytesIO()
         workbook.save(output)
@@ -196,8 +215,8 @@ class OpenpyxlWorkbookGenerator:
 
         Maps quotation fields to the agreed column structure. ``sequence_number``
         is the manual group value, or ``None`` for the single-quotation path.
-        Manual operational fields (Installation Schedule, Start Date, Status)
-        are left blank because they are not derived from the quotation PDF.
+        The operational dates are left blank because they are not derived from
+        the quotation PDF, and Status is whatever three blank dates mean.
         """
         self._write_row(
             sheet,
@@ -208,9 +227,10 @@ class OpenpyxlWorkbookGenerator:
                 "Product Description": item.description,
                 "Quantity": item.quantity,
                 "Unit of Measurement": item.unit,
-                "Installation Schedule": None,  # Manual field - leave blank
-                "Start Date": None,  # Manual field - leave blank
-                "Status": None,  # Manual field - leave blank
+                "Installation Schedule": None,  # Not in the PDF - leave blank
+                "Start Date": None,  # Not in the PDF - leave blank
+                "Completion Date": None,  # Not in the PDF - leave blank
+                "Status": derive_status(None, None, None),
             },
             item.description,
         )
@@ -220,10 +240,15 @@ class OpenpyxlWorkbookGenerator:
 
         This is not a quotation and is not unpacked like one. A row read from a
         monitoring workbook is already a finished Summary row: it carries the
-        Installation Schedule, Start Date and Status its owner set, and those are
-        written through exactly as found. A phrase such as "to be agreed" is
-        something the user wrote and is not a date to be tidied, and a blank cell
+        Installation Schedule, Start Date and Completion Date its owner set, and
+        those are written through exactly as found. A phrase such as "to be agreed"
+        is something the user wrote and is not a date to be tidied, and a blank cell
         is a blank cell rather than a gap to be filled.
+
+        Status is the one column not written through. It follows from the three
+        fields above it, so a cell that claims the work is finished while the
+        Completion Date is empty is corrected here rather than carried into the
+        next version of the file.
 
         The Sequence Number is an identifier and is written as the string it
         already is, leading zeros and all. Nothing here works out, compares or
@@ -241,7 +266,10 @@ class OpenpyxlWorkbookGenerator:
                 "Unit of Measurement": row.unit_of_measurement,
                 "Installation Schedule": row.installation_schedule,
                 "Start Date": row.start_date,
-                "Status": row.status,
+                "Completion Date": row.completion_date,
+                "Status": derive_status(
+                    row.installation_schedule, row.start_date, row.completion_date
+                ),
             },
             row.product_description,
         )
@@ -278,7 +306,7 @@ class OpenpyxlWorkbookGenerator:
             cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
         elif column_name == "Quantity":
             cell.alignment = Alignment(horizontal="center", vertical="top")
-        elif column_name in ("Installation Schedule", "Start Date"):
+        elif column_name in self.OPERATIONAL_FIELDS:
             cell.alignment = Alignment(horizontal="center", vertical="top")
             cell.number_format = self.DATE_FORMAT
         elif column_name == "Unit of Measurement":
@@ -319,13 +347,8 @@ class OpenpyxlWorkbookGenerator:
         last_col = get_column_letter(len(self.COLUMNS))
         sheet.auto_filter.ref = f"A1:{last_col}{last_row}"
 
-    def _status_range(self, last_row: int) -> str:
-        """The Status column range, extended for manual rows below the data."""
-        col = get_column_letter(self.COLUMNS.index("Status") + 1)
-        return f"{col}2:{col}{last_row + self.BUFFER_ROWS}"
-
     def _row_range(self, last_row: int) -> str:
-        """The full data-row range (A:I), extended for manual rows below the data.
+        """The full data-row range (A:J), extended for manual rows below the data.
 
         Status conditional formatting is applied to the whole row so a status
         value colours every cell in that row, not only the Status cell. The
@@ -335,35 +358,19 @@ class OpenpyxlWorkbookGenerator:
         last_col = get_column_letter(len(self.COLUMNS))
         return f"{first_col}2:{last_col}{last_row + self.BUFFER_ROWS}"
 
-    def _apply_status_validation(self, sheet, last_row: int) -> None:
-        """Add the real Excel dropdown for the Status column.
-
-        ``showDropDown`` is deliberately left unset: in the OOXML that Excel
-        writes, ``showDropDown="1"`` actually hides the in-cell dropdown, so the
-        default (attribute omitted) is what makes the arrow appear.
-        """
-        options = ",".join(self.STATUS_VALUES)
-        validation = DataValidation(
-            type="list",
-            formula1=f'"{options}"',
-            allow_blank=True,
-        )
-        validation.error = "Choose On Hold, Ongoing or Completed."
-        validation.errorTitle = "Invalid status"
-        validation.prompt = "Choose a status."
-        validation.promptTitle = "Status"
-        sheet.add_data_validation(validation)
-        validation.add(self._status_range(last_row))
-
     def _apply_date_validation(self, sheet, last_row: int) -> None:
-        """Constrain Installation Schedule and Start Date to real dates.
+        """Constrain the three operational columns to real dates.
+
+        There is no validation on Status: it is worked out from these dates
+        rather than chosen, so a dropdown offering three answers would only
+        invite one that disagrees with them.
 
         This narrows input to sensible date values. Whether Excel also shows a
         calendar popup depends on the Excel build/version, which openpyxl cannot
         guarantee; the cell format and value are always correct here.
         """
-        start_col = get_column_letter(self.COLUMNS.index("Installation Schedule") + 1)
-        end_col = get_column_letter(self.COLUMNS.index("Start Date") + 1)
+        start_col = get_column_letter(self.COLUMNS.index(self.OPERATIONAL_FIELDS[0]) + 1)
+        end_col = get_column_letter(self.COLUMNS.index(self.OPERATIONAL_FIELDS[-1]) + 1)
         ref = f"{start_col}2:{end_col}{last_row + self.BUFFER_ROWS}"
 
         validation = DataValidation(
@@ -384,10 +391,10 @@ class OpenpyxlWorkbookGenerator:
         """Colour the whole data row dynamically from the Status column value.
 
         Conditional formatting (rather than a static fill) means the row colour
-        follows the dropdown: changing Ongoing to Completed recolours the row,
-        and clearing the value removes the colour. The formula pins the Status
-        column with ``$I`` so the rule reads column I while its row number moves
-        down the whole A:I range.
+        follows the dates behind it: fill in the Completion Date and the row
+        turns green, and clearing it removes the colour. The formula pins the
+        Status column with ``$J`` so the rule reads column J while its row
+        number moves down the whole A:J range.
         """
         row_range = self._row_range(last_row)
         status_col = get_column_letter(self.COLUMNS.index("Status") + 1)
@@ -407,3 +414,57 @@ class OpenpyxlWorkbookGenerator:
                     stopIfTrue=False,
                 ),
             )
+
+    def _apply_group_borders(self, sheet, last_row: int) -> None:
+        """Separate the client/project groups with a line across the full row.
+
+        A monitoring sheet is read in groups: several rows belong to one project
+        for one client, and the eye should see where one group stops without
+        reading the Client and Project cells of every row. A thin line keeps
+        rows of the same group together; a thick line marks the boundary.
+
+        The boundary is Client + Project, never Sequence Number: two quotations
+        can share a project, and one project can be split across sequences, so
+        the sequence says nothing about which rows belong together.
+
+        The first data row gets nothing above it, because there is nothing above
+        it to separate from, and only data rows are touched: the buffer rows the
+        conditional formatting reaches stay borderless, since a line under empty
+        cells would read as a group that is not there. The line spans every
+        column so it still divides the row where the Status colour is.
+        """
+        if last_row < 2:
+            return
+
+        thin = Side(style="thin")
+        thick = Side(style="thick")
+        client_col = self.COLUMNS.index("Client Name") + 1
+        project_col = self.COLUMNS.index("Project Name") + 1
+        last_col = len(self.COLUMNS)
+
+        def group_of(row: int) -> tuple[str, str]:
+            return (
+                _group_text(sheet.cell(row=row, column=client_col).value),
+                _group_text(sheet.cell(row=row, column=project_col).value),
+            )
+
+        previous = group_of(2)
+        for row in range(3, last_row + 1):
+            current = group_of(row)
+            side = thin if current == previous else thick
+            for column in range(1, last_col + 1):
+                cell = sheet.cell(row=row, column=column)
+                cell.border = Border(top=side)
+            previous = current
+
+
+def _group_text(value: object) -> str:
+    """One client or project name reduced to what identifies it.
+
+    Leading and trailing spaces and letter case are a typing habit, not a
+    different client, so they cannot open a gap between two rows that name the
+    same group.
+    """
+    if value is None:
+        return ""
+    return str(value).strip().casefold()

@@ -18,6 +18,7 @@ import {
   createMonitorDraft,
   hasUnsavedChanges,
   monitorDraftReducer,
+  type EditableMonitorField,
   type MonitorDraftAction,
   type MonitorDraftState,
 } from './monitorDraft'
@@ -33,7 +34,8 @@ function row(overrides: Partial<ImportedMonitorRow> = {}): ImportedMonitorRow {
     unit_of_measurement: 'm2',
     installation_schedule: '',
     start_date: null,
-    status: 'Ongoing',
+    completion_date: null,
+    status: 'On Hold',
     ...overrides,
   }
 }
@@ -299,23 +301,99 @@ describe('start date', () => {
   })
 })
 
-describe('status', () => {
-  it.each(['On Hold', 'Ongoing', 'Completed', ''])('accepts %o', (status) => {
-    const state = reduce([{ type: 'row/set', index: 0, field: 'status', value: status }])
+describe('status follows the dates it is derived from', () => {
+  it('is worked out when the draft is opened, not taken from the file', () => {
+    // A Status is not something a workbook gets to assert. Whatever the cell
+    // said, the row arrives holding what its own dates mean.
+    const state = createMonitorDraft(monitor([row({ status: 'Completed' })]))
 
-    expect(state.rows[0].status).toBe(status)
+    expect(state.rows[0].status).toBe('On Hold')
   })
 
-  it('refuses a value outside the list the workbook offers', () => {
-    const state = reduce([{ type: 'row/set', index: 0, field: 'status', value: 'Paused' }])
+  it('is kept as the baseline, so opening a file never looks like an edit', () => {
+    const state = createMonitorDraft(monitor([row({ status: 'Completed' })]))
 
+    expect(state.saved[0].status).toBe('On Hold')
+    expect(hasUnsavedChanges(state)).toBe(false)
+  })
+
+  it('becomes Completed as soon as a completion date is entered', () => {
+    const state = reduce([
+      { type: 'row/set', index: 0, field: 'completion_date', value: '20/11/2026' },
+    ])
+
+    expect(state.rows[0].completion_date).toBe('20/11/2026')
+    expect(state.rows[0].status).toBe('Completed')
+  })
+
+  it('drops back to Ongoing when the completion date is cleared again', () => {
+    const state = reduce(
+      [{ type: 'row/set', index: 0, field: 'completion_date', value: '' }],
+      monitor([
+        row({
+          installation_schedule: 'November 2026',
+          start_date: '01/11/2026',
+          completion_date: '20/11/2026',
+        }),
+      ]),
+    )
+
+    expect(state.rows[0].completion_date).toBeNull()
     expect(state.rows[0].status).toBe('Ongoing')
   })
 
-  it('is cleared to blank rather than filled with a default', () => {
-    const state = reduce([{ type: 'row/set', index: 0, field: 'status', value: '' }])
+  it('is Ongoing only once the job has both a schedule and a start date', () => {
+    const scheduled = reduce([
+      { type: 'row/set', index: 0, field: 'installation_schedule', value: 'November 2026' },
+    ])
+    expect(scheduled.rows[0].status).toBe('On Hold')
 
-    expect(state.rows[0].status).toBe('')
+    const started = monitorDraftReducer(scheduled, {
+      type: 'row/set',
+      index: 0,
+      field: 'start_date',
+      value: '01/11/2026',
+    })
+    expect(started.rows[0].status).toBe('Ongoing')
+  })
+
+  it('goes back to On Hold when the start date is cleared', () => {
+    const state = reduce([
+      { type: 'row/set', index: 0, field: 'start_date', value: '' },
+    ])
+
+    expect(state.rows[0].start_date).toBeNull()
+    expect(state.rows[0].status).toBe('On Hold')
+  })
+
+  it('is left alone when a field it does not follow is edited', () => {
+    const state = reduce(
+      [{ type: 'row/set', index: 0, field: 'client_name', value: 'NEW CLIENT' }],
+      monitor([
+        row({ installation_schedule: 'November 2026', start_date: '01/11/2026' }),
+      ]),
+    )
+
+    expect(state.rows[0].client_name).toBe('NEW CLIENT')
+    expect(state.rows[0].status).toBe('Ongoing')
+  })
+
+  it('has no editable field of its own', () => {
+    // Spelled out at runtime so that adding Status, or dropping an editable
+    // field, fails a test rather than only a type check.
+    const editable: readonly EditableMonitorField[] = [
+      'client_name',
+      'project_name',
+      'product_description',
+      'quantity',
+      'unit_of_measurement',
+      'installation_schedule',
+      'start_date',
+      'completion_date',
+    ]
+
+    expect(editable).toHaveLength(8)
+    expect((editable as readonly string[]).includes('status')).toBe(false)
   })
 })
 

@@ -51,6 +51,8 @@ def test_the_response_carries_every_monitored_field() -> None:
     response = upload(generated_monitoring_workbook())
 
     first = response.json()["rows"][0]
+    # There is no Status the file could have supplied: nothing in these rows is
+    # finished, so the one the dates support comes back with them.
     assert first == {
         "sequence_number": "001",
         "client_name": "SAMPLE CLIENT TRADING L.L.C",
@@ -60,7 +62,8 @@ def test_the_response_carries_every_monitored_field() -> None:
         "unit_of_measurement": "m2",
         "installation_schedule": "",
         "start_date": None,
-        "status": "",
+        "completion_date": None,
+        "status": "On Hold",
     }
 
 
@@ -114,11 +117,29 @@ def test_an_invalid_sequence_number_is_rejected() -> None:
     assert response.json()["error"]["code"] == "InvalidSequenceNumberError"
 
 
-def test_an_unknown_status_is_rejected() -> None:
+def test_an_unknown_status_is_replaced_by_the_one_the_dates_support() -> None:
+    # A Status is not a value this endpoint takes from a file. Whatever the cell
+    # said, the row comes back holding what its own dates mean, so a word nobody
+    # recognises can never travel into the next export.
     response = upload(summary_workbook([row(status="Paused")]))
 
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "InvalidStatusValueError"
+    assert response.status_code == 200
+    imported = response.json()["rows"][0]
+    assert imported["status"] == "On Hold"
+    # And the reason it was replaced is visible: there is nothing set at all.
+    assert imported["completion_date"] is None
+
+
+def test_a_status_the_file_disagrees_with_its_own_dates_is_corrected() -> None:
+    # The dates are the source, not the cell, in both directions.
+    response = upload(
+        summary_workbook(
+            [row(installation_schedule="October 2026", start_date="01/10/2026", status="Completed")]
+        )
+    )
+
+    assert response.status_code == 200
+    assert response.json()["rows"][0]["status"] == "Ongoing"
 
 
 def test_a_missing_file_is_rejected_without_a_server_error() -> None:
@@ -131,15 +152,31 @@ def test_a_missing_file_is_rejected_without_a_server_error() -> None:
     assert "traceback" not in str(response.json()).lower()
 
 
-@pytest.mark.parametrize("column", SUMMARY_COLUMNS)
-def test_every_generator_column_is_required(column: str) -> None:
+@pytest.mark.parametrize("column", [name for name in SUMMARY_COLUMNS if name != "Completion Date"])
+def test_every_required_generator_column_is_required(column: str) -> None:
     # Proves the endpoint's required set is the generator's real header list, one
-    # column at a time, so the two cannot drift apart unnoticed.
+    # column at a time, so the two cannot drift apart unnoticed. Completion Date
+    # is deliberately absent: it is the one column old workbooks do not have.
     columns = [name for name in SUMMARY_COLUMNS if name != column]
     response = upload(summary_workbook([row()], columns=columns))
 
     assert response.status_code == 422
     assert column in response.json()["error"]["detail"]
+
+
+def test_completion_date_is_the_only_column_a_workbook_may_omit() -> None:
+    # A monitoring sheet saved before Completion Date existed still opens. The
+    # column is not there, the rows are still finished or unfinished, and the
+    # Status comes from the two dates the sheet does have.
+    columns = [name for name in SUMMARY_COLUMNS if name != "Completion Date"]
+    response = upload(
+        summary_workbook([row(installation_schedule="", start_date=None)], columns=columns)
+    )
+
+    assert response.status_code == 200
+    imported = response.json()["rows"][0]
+    assert imported["completion_date"] is None
+    assert imported["status"] == "On Hold"
 
 
 def test_the_existing_routes_are_unchanged() -> None:

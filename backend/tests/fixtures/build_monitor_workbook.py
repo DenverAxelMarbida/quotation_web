@@ -22,7 +22,7 @@ from app.models.quotation import Quotation, QuotationItem
 from app.models.workbook import ConfirmedQuotation, ConsolidatedWorkbookRequest
 
 # The exact Summary header the generator writes, in order. Import must find these
-# nine names, so the fixtures use the real list rather than a shortened copy.
+# names, so the fixtures use the real list rather than a shortened copy.
 SUMMARY_COLUMNS = list(OpenpyxlWorkbookGenerator.COLUMNS)
 
 
@@ -170,7 +170,7 @@ def summary_workbook(
 ) -> bytes:
     """A workbook whose Summary sheet holds exactly the given rows.
 
-    Column order comes from ``columns`` (the real nine by default) and each row is
+    Column order comes from ``columns`` (the generator's own list by default) and each row is
     a mapping of column name to value, so a test only has to state the cells it
     cares about; anything it leaves out is written as an empty cell.
     """
@@ -203,9 +203,15 @@ def row(
     unit_of_measurement: object = "m2",
     installation_schedule: object = None,
     start_date: object = None,
+    completion_date: object = None,
     status: object = None,
 ) -> dict[str, object]:
-    """One Summary row. Named arguments mirror the column names."""
+    """One Summary row. Named arguments mirror the column names.
+
+    ``completion_date`` defaults to None so a test can build the older
+    nine-column workbook, which has no such cell; leaving it out must read as
+    "not finished" rather than as a date nobody wrote.
+    """
     return {
         "Sequence Number": sequence_number,
         "Client Name": client_name,
@@ -215,6 +221,7 @@ def row(
         "Unit of Measurement": unit_of_measurement,
         "Installation Schedule": installation_schedule,
         "Start Date": start_date,
+        "Completion Date": completion_date,
         "Status": status,
     }
 

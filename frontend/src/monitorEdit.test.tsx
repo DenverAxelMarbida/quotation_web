@@ -3,16 +3,18 @@
  *
  * The mother opens the workbook that already exists, reads the preview, and then
  * finds rows the PDF never carried: a schedule the office moved, a start date
- * that was agreed verbally, a status that is wrong because the work is not moving.
- * This phase lets her fix those, in the browser, without touching the file.
+ * that was agreed verbally, a completion date nobody wrote down. This phase lets
+ * her fix those, in the browser, without touching the file.
  *
- * Three things must stay true, and most of these tests exist to hold them:
+ * The things that must stay true, and most of these tests exist to hold them:
  *
  * - The Sequence Number is an identifier. It is not editable, and it is never
  *   renumbered, padded or converted to a number. Renumbering is continuation
  *   logic that Phase 5B does not have.
  * - Nothing is invented. A cleared box means "not recorded", not zero, and a date
  *   the user typed as a phrase stays a phrase.
+ * - Status is not one of the boxes. It follows from the three dates beside it,
+ *   so it is read as text and changes when they do.
  * - The workbook on disk is never touched. Saving is in-memory and says so. The
  *   import endpoint stays the only one the monitor calls, and closing the tab
  *   loses the edits, because a later phase will handle that on purpose.
@@ -51,7 +53,8 @@ function row(overrides: Partial<ImportedMonitorRow> = {}): ImportedMonitorRow {
     unit_of_measurement: 'm2',
     installation_schedule: '',
     start_date: null,
-    status: 'Ongoing',
+    completion_date: null,
+    status: 'On Hold',
     ...overrides,
   }
 }
@@ -65,7 +68,7 @@ function importedMonitor(overrides: Partial<ImportedMonitor> = {}): ImportedMoni
       project_name: 'Marina Bay Tower',
       product_description: 'Self-levelling up to 3mm',
       quantity: 122,
-      status: '',
+      status: 'On Hold',
     }),
   ]
   return {
@@ -141,6 +144,15 @@ function type(name: string, rowNumber: number, value: string) {
   fireEvent.change(field(rowNumber, name), { target: { value } })
 }
 
+/**
+ * The Status cell of a row. It has no label because it is not a control: the
+ * column is read as text in both modes, and the last cell is where it sits.
+ */
+function statusCell(rowNumber: number) {
+  const cells = within(bodyRows()[rowNumber - 1]).getAllByRole('cell')
+  return cells[cells.length - 1]
+}
+
 function save() {
   fireEvent.click(within(section()).getByRole('button', { name: /save changes/i }))
 }
@@ -162,7 +174,7 @@ describe('entering the editor', () => {
     expect(within(section()).queryByRole('button', { name: /save changes/i })).toBeNull()
   })
 
-  it('shows all nine columns when editing', async () => {
+  it('shows all ten columns when editing', async () => {
     await openEditor()
 
     const headers = within(table())
@@ -177,6 +189,7 @@ describe('entering the editor', () => {
       'Unit of Measurement',
       'Installation Schedule',
       'Start Date',
+      'Completion Date',
       'Status',
     ])
   })
@@ -375,33 +388,59 @@ describe('start date', () => {
 })
 
 describe('status', () => {
-  it('offers only the three statuses the workbook knows, plus leaving it blank', async () => {
+  it('is shown as text, because it is not a field she fills in', async () => {
+    // There is nothing to pick from and nothing to type: the column already
+    // says what the three dates beside it mean, and an input here would only
+    // let a row disagree with itself.
     await openEditor()
 
-    const options = within(field(1, 'Status')).getAllByRole('option')
-    expect(options.map((option) => (option as HTMLOptionElement).value)).toEqual([
-      '',
-      'On Hold',
-      'Ongoing',
-      'Completed',
-    ])
+    expect(within(section()).queryByLabelText(/^Status, row/)).toBeNull()
+    expect(statusCell(1)).toHaveTextContent('On Hold')
   })
 
-  it('shows the status the workbook held', async () => {
+  it('becomes Completed when a completion date is entered', async () => {
     await openEditor()
-    expect(field(1, 'Status')).toHaveValue('Ongoing')
+    expect(statusCell(1)).toHaveTextContent('On Hold')
+
+    type('Completion Date', 1, '20/11/2026')
+
+    expect(statusCell(1)).toHaveTextContent('Completed')
   })
 
-  it.each(['On Hold', 'Ongoing', 'Completed'])('can be set to %s', async (status) => {
+  it('falls back to Ongoing when the completion date is cleared again', async () => {
     await openEditor()
-    type('Status', 1, status)
-    expect(field(1, 'Status')).toHaveValue(status)
+    type('Installation Schedule', 1, 'November 2026')
+    type('Start Date', 1, '01/11/2026')
+    type('Completion Date', 1, '20/11/2026')
+    expect(statusCell(1)).toHaveTextContent('Completed')
+
+    type('Completion Date', 1, '')
+
+    expect(statusCell(1)).toHaveTextContent('Ongoing')
   })
 
-  it('can be left blank', async () => {
+  it('is Ongoing only once the row has both a schedule and a start date', async () => {
     await openEditor()
-    type('Status', 1, '')
-    expect(field(1, 'Status')).toHaveValue('')
+
+    type('Installation Schedule', 1, 'November 2026')
+    expect(statusCell(1)).toHaveTextContent('On Hold')
+
+    type('Start Date', 1, '01/11/2026')
+    expect(statusCell(1)).toHaveTextContent('Ongoing')
+
+    type('Start Date', 1, '')
+    expect(statusCell(1)).toHaveTextContent('On Hold')
+  })
+
+  it('is left alone when a field it does not follow is edited', async () => {
+    await openEditor()
+    type('Installation Schedule', 1, 'November 2026')
+    type('Start Date', 1, '01/11/2026')
+    expect(statusCell(1)).toHaveTextContent('Ongoing')
+
+    type('Client Name', 1, 'NEW CLIENT')
+
+    expect(statusCell(1)).toHaveTextContent('Ongoing')
   })
 })
 
@@ -526,12 +565,12 @@ describe('cancelling', () => {
     await openEditor()
     type('Project Name', 1, 'Serenity Residence')
     type('Quantity', 1, '40')
-    type('Status', 1, 'Completed')
+    type('Completion Date', 1, '20/11/2026')
     cancel()
 
     await waitFor(() => expect(within(bodyRows()[0]).getByText('MBRC 466')).toBeInTheDocument())
     expect(within(bodyRows()[0]).getByText('34')).toBeInTheDocument()
-    expect(within(bodyRows()[0]).getByText('Ongoing')).toBeInTheDocument()
+    expect(within(bodyRows()[0]).getByText('On Hold')).toBeInTheDocument()
   })
 
   it('keeps changes that were already saved', async () => {

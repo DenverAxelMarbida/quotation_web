@@ -20,7 +20,6 @@ import pytest
 from app.services.errors import (
     EmptySummaryError,
     InvalidSequenceNumberError,
-    InvalidStatusValueError,
     MissingColumnsError,
     MissingSummarySheetError,
     NotExcelError,
@@ -87,10 +86,12 @@ def test_a_new_quotation_is_appended_after_the_existing_rows() -> None:
     assert new.quantity == 34.0
     assert new.unit_of_measurement == "m2"
     # A quotation never supplies these, so they stay empty for the user to fill
-    # in by hand (AGENTS.md section 6).
+    # in by hand (AGENTS.md section 6). Nothing is set, so the row reports the
+    # one status that follows from nothing being set.
     assert new.installation_schedule == ""
     assert new.start_date is None
-    assert new.status == ""
+    assert new.completion_date is None
+    assert new.status == "On Hold"
 
 
 def test_the_highest_sequence_is_read_from_the_combined_workbook() -> None:
@@ -283,28 +284,175 @@ def test_a_start_date_typed_as_text_is_left_alone() -> None:
     assert monitor.rows[0].start_date == "to be agreed"
 
 
-def test_a_blank_status_stays_blank() -> None:
+def test_a_row_with_no_dates_at_all_is_on_hold() -> None:
+    # The blank workbook is the normal "nothing has been agreed" state. It used
+    # to arrive as an unset Status the user would then have to choose; there is
+    # nothing to choose now, so the row says what its dates say.
     monitor = service.import_monitor(summary_workbook([row()]), "monitoring_sheet.xlsx")
 
-    assert monitor.rows[0].status == ""
+    assert monitor.rows[0].status == "On Hold"
 
 
-@pytest.mark.parametrize("status", ["On Hold", "Ongoing", "Completed"])
-def test_every_status_value_is_preserved(status: str) -> None:
+def test_an_imported_status_is_recalculated_rather_than_trusted() -> None:
+    # The most important rule in this feature. A workbook carries a Status column
+    # because older versions of this application let people choose one, and what
+    # they chose may be wrong, stale, or impossible. The three operational fields
+    # are the evidence, so they are what gets read.
     monitor = service.import_monitor(
-        summary_workbook([row(status=status)]), "monitoring_sheet.xlsx"
+        summary_workbook(
+            [
+                row(
+                    installation_schedule="October 2026",
+                    start_date="01/10/2026",
+                    completion_date=None,
+                    status="Completed",
+                )
+            ]
+        ),
+        "monitoring_sheet.xlsx",
     )
 
-    assert monitor.rows[0].status == status
+    assert monitor.rows[0].status == "Ongoing"
 
 
-def test_a_status_outside_the_allowed_values_is_rejected() -> None:
-    # The Status cell has a dropdown, so anything else means the file was not
-    # produced by this application. It is reported, not quietly accepted.
-    with pytest.raises(InvalidStatusValueError) as failure:
-        service.import_monitor(summary_workbook([row(status="Paused")]), "monitoring_sheet.xlsx")
+def test_a_status_this_application_does_not_know_is_replaced_not_rejected() -> None:
+    # Once the dropdown is gone, anything can be in that cell -- a workbook
+    # edited by hand, or by another team's tool. Refusing the whole file would
+    # stop the user getting her rows back, and the value was never evidence.
+    monitor = service.import_monitor(
+        summary_workbook([row(status="Paused")]), "monitoring_sheet.xlsx"
+    )
 
-    assert "Paused" in str(failure.value)
+    assert monitor.rows[0].status == "On Hold"
+
+
+def test_a_completion_date_makes_the_row_completed_on_import() -> None:
+    # Completion outranks everything else, including a workbook that never
+    # caught up.
+    monitor = service.import_monitor(
+        summary_workbook(
+            [
+                row(
+                    installation_schedule="",
+                    start_date=None,
+                    completion_date="15/10/2026",
+                    status="On Hold",
+                )
+            ]
+        ),
+        "monitoring_sheet.xlsx",
+    )
+
+    assert monitor.rows[0].completion_date == "15/10/2026"
+    assert monitor.rows[0].status == "Completed"
+
+
+def test_an_empty_completion_date_does_not_make_the_row_completed() -> None:
+    # The exact cell the rule has to be careful about: filled-in schedule and
+    # start date, and nothing else. That is Ongoing, not Completed.
+    monitor = service.import_monitor(
+        summary_workbook(
+            [
+                row(
+                    installation_schedule="October 2026",
+                    start_date="01/10/2026",
+                    completion_date=None,
+                )
+            ]
+        ),
+        "monitoring_sheet.xlsx",
+    )
+
+    assert monitor.rows[0].completion_date is None
+    assert monitor.rows[0].status == "Ongoing"
+
+
+def test_a_completion_date_is_read_as_the_workbook_displays_it() -> None:
+    # A date cell is stored as a real date and formatted in the workbook, so the
+    # import shows the same DD/MM/YYYY the user sees in Excel.
+    monitor = service.import_monitor(
+        summary_workbook([row(completion_date=datetime(2026, 10, 15))]), "monitoring_sheet.xlsx"
+    )
+
+    assert monitor.rows[0].completion_date == "15/10/2026"
+    assert monitor.rows[0].status == "Completed"
+
+
+def test_a_completion_date_typed_as_text_is_left_alone() -> None:
+    # A phrase such as "to be agreed" is something the user wrote and is not a
+    # date to be tidied -- the same rule Start Date follows.
+    monitor = service.import_monitor(
+        summary_workbook([row(completion_date="week 42")]), "monitoring_sheet.xlsx"
+    )
+
+    assert monitor.rows[0].completion_date == "week 42"
+
+
+def test_an_older_workbook_without_a_completion_date_column_still_imports() -> None:
+    # Deliberate backwards compatibility, not an accident. Workbooks written
+    # before this column existed are still the files the user shares, and
+    # refusing them would strand her on the old version forever. The missing
+    # column is simply no completion date.
+    older = [name for name in SUMMARY_COLUMNS if name != "Completion Date"]
+    data = summary_workbook(
+        [
+            row(
+                installation_schedule="October 2026",
+                start_date="01/10/2026",
+                status="Completed",
+            )
+        ],
+        columns=older,
+    )
+
+    monitor = service.import_monitor(data, "monitoring_sheet.xlsx")
+
+    assert monitor.rows[0].completion_date is None
+
+
+def test_an_older_workbook_does_not_inherit_a_completed_status() -> None:
+    # The important half of the compatibility rule. That workbook says
+    # "Completed", and there is no Completion Date to support the claim, so the
+    # row is reported as the unfinished work it may well still be. Inferring a
+    # completion date from an old status would be inventing a fact.
+    older = [name for name in SUMMARY_COLUMNS if name != "Completion Date"]
+    data = summary_workbook(
+        [
+            row(
+                installation_schedule="October 2026",
+                start_date="01/10/2026",
+                status="Completed",
+            )
+        ],
+        columns=older,
+    )
+
+    monitor = service.import_monitor(data, "monitoring_sheet.xlsx")
+
+    assert monitor.rows[0].status == "Ongoing"
+
+
+def test_an_older_workbook_with_nothing_agreed_is_on_hold() -> None:
+    # The other branch of the same rule: without a Completion Date column, a
+    # row is Completed only if it never claimed to be anyway.
+    older = [name for name in SUMMARY_COLUMNS if name != "Completion Date"]
+    data = summary_workbook([row(status="Completed")], columns=older)
+
+    monitor = service.import_monitor(data, "monitoring_sheet.xlsx")
+
+    assert monitor.rows[0].status == "On Hold"
+
+
+def test_a_missing_completion_date_column_is_the_only_optional_one() -> None:
+    # Every other column is still required. This pins the compatibility exception
+    # to exactly one column, so it cannot quietly spread.
+    shortened = [name for name in SUMMARY_COLUMNS if name != "Start Date"]
+    data = summary_workbook([row()], columns=shortened)
+
+    with pytest.raises(MissingColumnsError) as failure:
+        service.import_monitor(data, "monitoring_sheet.xlsx")
+
+    assert "Start Date" in str(failure.value)
 
 
 def test_a_quantity_stays_numeric() -> None:
@@ -466,7 +614,10 @@ def test_the_quotation_row_of_a_generated_workbook_keeps_its_values() -> None:
     assert first.product_description == "Sample flooring product"
     assert first.quantity == 34.0
     assert first.unit_of_measurement == "m2"
-    # The generator leaves the manual columns empty, and so must the import.
+    # The generator leaves the operational columns empty, and so must the import.
+    # With nothing set, the row's status is On Hold rather than a blank the user
+    # would otherwise have to fill in herself.
     assert first.installation_schedule == ""
     assert first.start_date is None
-    assert first.status == ""
+    assert first.completion_date is None
+    assert first.status == "On Hold"

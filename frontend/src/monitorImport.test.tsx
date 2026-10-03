@@ -45,7 +45,8 @@ function row(overrides: Partial<ImportedMonitorRow> = {}): ImportedMonitorRow {
     unit_of_measurement: 'm2',
     installation_schedule: '',
     start_date: null,
-    status: 'Ongoing',
+    completion_date: null,
+    status: 'On Hold',
     ...overrides,
   }
 }
@@ -64,7 +65,7 @@ function importedMonitor(overrides: Partial<ImportedMonitor> = {}): ImportedMoni
         project_name: 'Marina Bay Tower',
         product_description: 'Self-levelling up to 3mm',
         quantity: 122,
-        status: '',
+        status: 'On Hold',
       }),
     ],
     highest_sequence: '002',
@@ -294,13 +295,26 @@ describe('the imported monitor preview', () => {
     expect(within(table).getByText('05/01/2026')).toBeInTheDocument()
   })
 
-  it('shows every status the user may have set', async () => {
+  it('shows the status that each row\'s own dates support', async () => {
+    // The workbook holds dates, not opinions: On Hold for a row with nothing
+    // set, Ongoing for one scheduled and started, Completed for one finished.
     monitorImport.mockResolvedValue(
       importedMonitor({
         rows: [
           row({ sequence_number: '001', status: 'On Hold' }),
-          row({ sequence_number: '002', status: 'Ongoing' }),
-          row({ sequence_number: '003', status: 'Completed' }),
+          row({
+            sequence_number: '002',
+            installation_schedule: 'November 2026',
+            start_date: '2026-11-01',
+            status: 'Ongoing',
+          }),
+          row({
+            sequence_number: '003',
+            installation_schedule: '01-05 Nov 2026',
+            start_date: '2026-11-01',
+            completion_date: '2026-11-05',
+            status: 'Completed',
+          }),
         ],
         highest_sequence: '003',
         row_count: 3,

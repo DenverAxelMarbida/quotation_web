@@ -214,7 +214,7 @@ def test_a_monitor_only_export_keeps_the_rows_as_they_stand() -> None:
     headers = [sheet.cell(row=1, column=c).value for c in range(1, sheet.max_column + 1)]
     first = [sheet.cell(row=2, column=c).value for c in range(1, sheet.max_column + 1)]
 
-    assert headers[:9] == [
+    assert headers[:10] == [
         "Sequence Number",
         "Client Name",
         "Project Name",
@@ -223,6 +223,7 @@ def test_a_monitor_only_export_keeps_the_rows_as_they_stand() -> None:
         "Unit of Measurement",
         "Installation Schedule",
         "Start Date",
+        "Completion Date",
         "Status",
     ]
     assert first == [
@@ -234,6 +235,7 @@ def test_a_monitor_only_export_keeps_the_rows_as_they_stand() -> None:
         "L.M.",
         "15-20 Nov 2026",
         "2026-11-15",
+        None,  # Still unfinished, so still no completion date
         "Ongoing",
     ]
 

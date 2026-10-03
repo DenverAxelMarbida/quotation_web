@@ -1,18 +1,19 @@
 /**
- * The nine-column monitoring table, in the two states it can be in.
+ * The ten-column monitoring table, in the two states it can be in.
  *
  * One table serves both, so the columns a person reads in the preview are
  * literally the columns they then edit, and neither version can drift from the
  * other. The only difference is what a cell holds.
  *
  * In `preview` a cell is text, and blanks read as a dash rather than being
- * filled in. In `edit` the eight data fields become inputs and the Sequence
- * Number stays text, because it is the identifier the row is filed under and
- * Phase 5B does not renumber anything.
+ * filled in. In `edit` the data fields become inputs; the Sequence Number stays
+ * text because it is the identifier the row is filed under, and Status stays
+ * text too because it is not an input at all -- it follows from the three dates
+ * beside it and changes when they do.
  */
 
 import type { ChangeEvent } from 'react'
-import type { ImportedMonitorRow, MonitorStatus } from '../types/monitor'
+import type { ImportedMonitorRow } from '../types/monitor'
 import type { EditableMonitorField } from '../state/monitorDraft'
 
 /** The workbook's columns, in the order the Summary sheet uses. */
@@ -25,11 +26,9 @@ const COLUMNS = [
   'Unit of Measurement',
   'Installation Schedule',
   'Start Date',
+  'Completion Date',
   'Status',
 ] as const
-
-/** The statuses the generated workbook's dropdown offers. */
-const STATUSES: readonly MonitorStatus[] = ['On Hold', 'Ongoing', 'Completed']
 
 export type MonitorTableProps = {
   rows: ImportedMonitorRow[]
@@ -54,7 +53,7 @@ export function MonitorTable({ rows, mode, onFieldChange }: MonitorTableProps) {
   const editing = mode === 'edit'
 
   const change = (index: number, field: EditableMonitorField) => (
-    event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>,
+    event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
   ) => {
     onFieldChange?.(index, field, event.target.value)
   }
@@ -143,19 +142,21 @@ export function MonitorTable({ rows, mode, onFieldChange }: MonitorTableProps) {
                   />
                 </td>
                 <td>
-                  <select
-                    aria-label={`Status, row ${index + 1}`}
-                    value={row.status}
-                    onChange={change(index, 'status')}
-                  >
-                    {/* Blank stays available, so a status can be cleared. */}
-                    <option value="">Not set</option>
-                    {STATUSES.map((status) => (
-                      <option key={status} value={status}>
-                        {status}
-                      </option>
-                    ))}
-                  </select>
+                  {/* The same treatment as Start Date: text, because it is a date
+                      the user writes or leaves empty, never a date picked. */}
+                  <input
+                    type="text"
+                    aria-label={`Completion Date, row ${index + 1}`}
+                    value={row.completion_date ?? ''}
+                    onChange={change(index, 'completion_date')}
+                  />
+                </td>
+                <td>
+                  {/* Read-only while editing, like the Sequence Number, but for a
+                      different reason: not "cannot be corrected" but "cannot be
+                      chosen". It already says what the three dates beside it mean,
+                      and an input here would only let a row contradict itself. */}
+                  <TextCell value={row.status} />
                 </td>
               </>
             ) : (
@@ -180,6 +181,9 @@ export function MonitorTable({ rows, mode, onFieldChange }: MonitorTableProps) {
                 </td>
                 <td>
                   <TextCell value={row.start_date} />
+                </td>
+                <td>
+                  <TextCell value={row.completion_date} />
                 </td>
                 <td>
                   <TextCell value={row.status} />

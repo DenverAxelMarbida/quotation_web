@@ -631,7 +631,7 @@ td input:not([type='number']) {
   margin: 1rem 0;
 }
 
-/* Nine columns of inputs need to scroll sideways rather than squash the text. */
+/* Ten columns of inputs need to scroll sideways rather than squash the text. */
 .monitor-import__table-wrap {
   overflow-x: auto;
 }
@@ -642,10 +642,10 @@ td input:not([type='number']) {
   white-space: nowrap;
 }
 
-/* Inputs fill the cell so the nine columns line up with the header above them,
-   rather than sitting in a column of ragged little boxes. */
-.monitor-table td input,
-.monitor-table td select {
+/* Inputs fill the cell so the ten columns line up with the header above them,
+   rather than sitting in a column of ragged little boxes. Status is not one of
+   them: it is read as text, so there is no control here to style. */
+.monitor-table td input {
   width: 100%;
   min-width: 4.5rem;
   padding: 0.35rem 0.4rem;
@@ -668,7 +668,6 @@ td input:not([type='number']) {
 }
 
 .monitor-table td input:focus-visible,
-.monitor-table td select:focus-visible,
 .monitor-table td textarea:focus-visible {
   outline: 2px solid #2b6cb0;
   outline-offset: 1px;

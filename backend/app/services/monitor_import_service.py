@@ -8,14 +8,17 @@ importing the wrong file would show the user a monitor that is not theirs.
 The rules it enforces:
 
 - The file is really a workbook, and it really has this application's Summary
-  sheet with its nine columns. Anything else is refused by name.
+  sheet with its columns. Anything else is refused by name. Completion Date is
+  the one exception: older workbooks do not have it and still open.
 - A Sequence Number is read as the identifier it is. ``"007"`` is never turned
   into ``7``; only the highest-sequence calculation compares numerically.
 - A cell the user left empty stays empty. Blank Installation Schedule, Start
-  Date and Status columns are normal, not errors, and none of them is filled in
-  with a guess.
-- A Status outside the dropdown's three values is reported. The column has a
-  dropdown, so a fourth value means the file came from somewhere else.
+  Date and Completion Date columns are normal, not errors, and none of them is
+  filled in with a guess.
+- Status is not read from its cell at all. The three operational fields are the
+  evidence, so the row's status is worked out from them instead -- including
+  when the cell holds a value this application has never heard of, which is
+  then replaced rather than refused.
 
 AGENTS.md section 9: when something cannot be read, say so in words the user can
 act on rather than presenting a half-filled sheet as if it were correct.
@@ -28,19 +31,27 @@ from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
 from app.excel.openpyxl_generator import OpenpyxlWorkbookGenerator
-from app.models.monitor import MONITOR_STATUS_VALUES, ImportedMonitor, ImportedMonitorRow
+from app.models.monitor import ImportedMonitor, ImportedMonitorRow
 from app.services.errors import (
     EmptySummaryError,
     InvalidSequenceNumberError,
-    InvalidStatusValueError,
     MissingColumnsError,
     MissingSummarySheetError,
     NotExcelError,
 )
 
+# The one column this application adds without requiring. Workbooks written
+# before Completion Date existed are still the files the user shares, and
+# refusing them would strand her on the old version. A missing column is not a
+# completion date, which is exactly what an unfinished job looks like, so the
+# row is read as unfinished and its status is worked out from there.
+OPTIONAL_COLUMN = "Completion Date"
+
 # Reusing the generator's own header list means the two cannot drift apart: if
 # the workbook layout changes, the import check follows it.
-REQUIRED_COLUMNS = tuple(OpenpyxlWorkbookGenerator.COLUMNS)
+REQUIRED_COLUMNS = tuple(
+    name for name in OpenpyxlWorkbookGenerator.COLUMNS if name != OPTIONAL_COLUMN
+)
 SUMMARY_SHEET = "Summary"
 
 # The workbook stores dates as real dates and displays them in its own format, so
@@ -166,6 +177,17 @@ class MonitorImportService:
             index = header_index[_column_name(name)]
             return row[index].value if index < len(row) else None
 
+        def optional_cell(name: str):
+            # Absent when an older workbook has no such column, which is the
+            # only reason this differs from ``cell``.
+            index = header_index.get(_column_name(name))
+            if index is None:
+                return None
+            return row[index].value if index < len(row) else None
+
+        # Status is deliberately not read from the cell. The model works it out
+        # from the three fields below on the way in, so a Status that disagrees
+        # with its own dates is corrected here rather than believed.
         return ImportedMonitorRow(
             sequence_number=self._sequence_number(cell("Sequence Number"), line),
             client_name=_text(cell("Client Name")),
@@ -175,7 +197,7 @@ class MonitorImportService:
             unit_of_measurement=_text(cell("Unit of Measurement")),
             installation_schedule=_text(cell("Installation Schedule")),
             start_date=_optional_text(cell("Start Date")),
-            status=self._status(cell("Status"), line),
+            completion_date=_optional_text(optional_cell(OPTIONAL_COLUMN)),
         )
 
     def _sequence_number(self, value, line: int) -> str:
@@ -205,20 +227,6 @@ class MonitorImportService:
             f"Row {line} has a Sequence Number this application cannot read: "
             f"{_text(value)!r}. Use a whole number, for example 001."
         )
-
-    def _status(self, value, line: int) -> str:
-        text = _optional_text(value)
-        if text in (None, ""):
-            return ""
-        if text not in MONITOR_STATUS_VALUES:
-            allowed = ", ".join(MONITOR_STATUS_VALUES)
-            raise InvalidStatusValueError(
-                f"Row {line} has the Status '{text}', which is not one of the "
-                f"statuses this application uses ({allowed}). Leave the Status "
-                "blank or choose one of those values in Excel, then upload the "
-                "file again."
-            )
-        return text
 
 
 def _column_name(value) -> str:

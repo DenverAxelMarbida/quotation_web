@@ -237,6 +237,7 @@ def test_consolidated_summary_columns_unchanged():
         "Unit of Measurement",
         "Installation Schedule",
         "Start Date",
+        "Completion Date",
         "Status",
     ]
 
@@ -302,6 +303,7 @@ def test_writes_correct_header_row():
         "Unit of Measurement",
         "Installation Schedule",
         "Start Date",
+        "Completion Date",
         "Status",
     ]
 
@@ -472,7 +474,7 @@ def _status_rules(sheet):
 
 
 def test_status_conditional_formatting_covers_the_whole_row():
-    """Status colours the whole row A:I via dynamic conditional formatting."""
+    """Status colours the whole row A:J via dynamic conditional formatting."""
     generator = OpenpyxlWorkbookGenerator()
     quotation = Quotation(
         quotation_number="TEST/001",
@@ -494,30 +496,37 @@ def test_status_conditional_formatting_covers_the_whole_row():
     # Exactly one rule for each of the three status values.
     assert len(rules) == 3
 
-    expected_range = f"A2:I{sheet.max_row + OpenpyxlWorkbookGenerator.BUFFER_ROWS}"
+    expected_range = f"A2:J{sheet.max_row + OpenpyxlWorkbookGenerator.BUFFER_ROWS}"
 
     for value, (fill_color, font_color) in expected.items():
         matches = [
-            (rng, rule) for rng, rule in rules if any(f'$I2="{value}"' == f for f in rule.formula)
+            (rng, rule) for rng, rule in rules if any(f'$J2="{value}"' == f for f in rule.formula)
         ]
         assert matches, f"missing conditional rule for {value}"
         rng, rule = matches[0]
-        # Applied across the whole row A:I, not only the Status column.
+        # Applied across the whole row A:J, not only the Status column.
         assert rng == expected_range
-        assert rng.startswith("A2:I")
-        # The formula pins the Status column with $I and moves down the rows.
-        assert rule.formula == [f'$I2="{value}"']
+        assert rng.startswith("A2:J")
+        # The formula pins the Status column with $J and moves down the rows.
+        assert rule.formula == [f'$J2="{value}"']
         assert rule.dxf.fill.start_color.rgb.endswith(fill_color)
         assert rule.dxf.font.color.rgb.endswith(font_color)
 
     # No cell carries a static fill; the colour is the rule's job, so it stays
-    # dynamic when the dropdown value changes.
-    for col in range(1, 10):
+    # dynamic when the Status changes with the dates.
+    for col in range(1, 11):
         assert sheet.cell(row=2, column=col).fill.fgColor.rgb in (None, "00000000")
 
 
-def test_status_data_validation_offers_exact_options():
-    """The Status column has a real list dropdown with the three statuses."""
+def test_the_status_column_has_no_dropdown():
+    """Status cannot be chosen, because it is not a choice.
+
+    There used to be a list validation here offering On Hold, Ongoing and
+    Completed. Status now follows from the three operational fields, so a
+    dropdown would let somebody disagree with the dates in the same row -- and
+    the value they typed would be overwritten the next time the workbook was
+    opened anyway. Only date validation remains.
+    """
     generator = OpenpyxlWorkbookGenerator()
     quotation = Quotation(
         quotation_number="TEST/001",
@@ -530,13 +539,10 @@ def test_status_data_validation_offers_exact_options():
     sheet = workbook["Summary"]
 
     list_rules = [dv for dv in sheet.data_validations.dataValidation if dv.type == "list"]
-    assert len(list_rules) == 1
-    rule = list_rules[0]
-    assert rule.formula1 == '"On Hold,Ongoing,Completed"'
-    assert rule.allow_blank is True
-    # The dropdown must be shown, so showDropDown must not be forced on.
-    assert rule.showDropDown is not True
-    assert "I2" in str(rule.sqref)
+    assert list_rules == []
+    # Nothing is offered anywhere else either -- no prompt on the Status cells.
+    for validation in sheet.data_validations.dataValidation:
+        assert str(validation.sqref) != "I2" and not str(validation.sqref).startswith("J2")
 
 
 def test_preserves_multiline_descriptions():
@@ -723,7 +729,7 @@ def test_freeze_panes_locks_the_header(sample_workbook):
 
 
 def test_auto_filter_covers_header_and_data(sample_workbook):
-    assert sample_workbook["Summary"].auto_filter.ref == "A1:I2"
+    assert sample_workbook["Summary"].auto_filter.ref == "A1:J2"
 
 
 def test_sequence_number_is_stored_and_formatted_as_text():
@@ -751,7 +757,9 @@ def test_sequence_number_is_stored_and_formatted_as_text():
 def test_date_columns_use_the_agreed_format(sample_workbook):
     sheet = sample_workbook["Summary"]
     expected = OpenpyxlWorkbookGenerator.DATE_FORMAT
-    for col in (7, 8):  # Installation Schedule, Start Date
+    # Installation Schedule, Start Date, Completion Date. Completion Date follows
+    # Start Date exactly: same format, same alignment, same blank start.
+    for col in (7, 8, 9):
         cell = sheet.cell(row=2, column=col)
         assert cell.number_format == expected
         assert cell.value is None
@@ -764,14 +772,28 @@ def test_date_cells_have_date_data_validation(sample_workbook):
     rule = date_rules[0]
     assert rule.allow_blank is True
     ref = str(rule.sqref)
-    assert "G2" in ref and "H" in ref
+    # All three operational columns are constrained: G, H and I as one range.
+    assert ref.startswith("G2:I"), ref
+    # And Status, in column J, is not one of them.
+    assert "J" not in ref
 
 
-def test_status_and_dates_remain_blank(sample_workbook):
-    """No manual operational field is ever auto-filled."""
+def test_the_operational_dates_remain_blank_on_a_new_row(sample_workbook):
+    """A quotation supplies no dates, so none is invented for it."""
     sheet = sample_workbook["Summary"]
-    for col in (7, 8, 9):
+    for col in (7, 8, 9):  # Installation Schedule, Start Date, Completion Date
         assert sheet.cell(row=2, column=col).value is None
+
+
+def test_a_new_row_reports_the_status_that_follows_from_blank_dates(sample_workbook):
+    """Three empty operational fields mean one thing: the work is on hold.
+
+    The Status column used to be left blank for the user to choose from a
+    dropdown. Nothing is left to choose now, and a blank row would read as
+    "not yet decided" when the honest answer is already known.
+    """
+    sheet = sample_workbook["Summary"]
+    assert sheet.cell(row=2, column=10).value == "On Hold"
 
 
 # ---------------------------------------------------------------------------
@@ -791,7 +813,11 @@ def test_status_and_dates_remain_blank(sample_workbook):
 
 
 def _existing(**overrides) -> ImportedMonitorRow:
-    """A row as the import service returns it, with every field spelled out."""
+    """A row as the import service returns it, with every field spelled out.
+
+    The Status is what its dates support, because that is what the import hands
+    over: a cell claiming something else would already have been corrected.
+    """
     fields = {
         "sequence_number": "001",
         "client_name": "EXISTING CLIENT",
@@ -801,7 +827,8 @@ def _existing(**overrides) -> ImportedMonitorRow:
         "unit_of_measurement": "m2",
         "installation_schedule": "",
         "start_date": None,
-        "status": "Ongoing",
+        "completion_date": None,
+        "status": "On Hold",
     }
     fields.update(overrides)
     return ImportedMonitorRow(**fields)
@@ -859,8 +886,13 @@ def test_existing_rows_keep_the_order_they_were_found_in():
     assert _sequences(sheet) == ["007", "002", "001", "008"]
 
 
-def test_an_existing_row_preserves_all_nine_fields():
-    """Nothing is normalised, inferred or dropped on the way back out."""
+def test_an_existing_row_preserves_all_ten_fields():
+    """Nothing is normalised, inferred or dropped on the way back out.
+
+    Completion Date is now one of them: it is the field that decides whether a
+    job is finished, so losing it would turn finished work back into unfinished
+    work the next time the file was opened.
+    """
     generator = OpenpyxlWorkbookGenerator()
     request = _combined(
         [
@@ -873,7 +905,7 @@ def test_an_existing_row_preserves_all_nine_fields():
                 unit_of_measurement="m2",
                 installation_schedule="15-20 Nov 2026",
                 start_date="to be agreed",
-                status="Ongoing",
+                completion_date="20/11/2026",
             )
         ],
         ("008", _quotation("New", "P", [(1, "new", 1.0, "m2")])),
@@ -881,7 +913,7 @@ def test_an_existing_row_preserves_all_nine_fields():
 
     sheet = _summary(generator.generate_consolidated(request))
 
-    assert [sheet.cell(row=2, column=c).value for c in range(1, 10)] == [
+    assert [sheet.cell(row=2, column=c).value for c in range(1, 11)] == [
         "007",
         "EXISTING CLIENT",
         "EXISTING PROJECT",
@@ -890,7 +922,8 @@ def test_an_existing_row_preserves_all_nine_fields():
         "m2",
         "15-20 Nov 2026",
         "to be agreed",
-        "Ongoing",
+        "20/11/2026",
+        "Completed",
     ]
 
 
@@ -909,11 +942,13 @@ def test_an_existing_sequence_number_stays_text_with_its_leading_zero():
     assert cell.number_format == "@"
 
 
-def test_an_existing_row_keeps_its_manual_fields_as_they_were():
-    """A schedule, a date and a status the user set are never second-guessed.
+def test_an_existing_row_keeps_its_dates_exactly_as_they_were():
+    """A schedule and a date the user set are never second-guessed.
 
     'to be agreed' is a phrase the user wrote, not a malformed date, so it is
-    written through untouched rather than blanked or reformatted.
+    written through untouched rather than blanked or reformatted. The same is
+    true of the empty Completion Date: an unfinished job has no completion date
+    and is not given one.
     """
     generator = OpenpyxlWorkbookGenerator()
     request = _combined(
@@ -921,7 +956,7 @@ def test_an_existing_row_keeps_its_manual_fields_as_they_were():
             _existing(
                 installation_schedule="15-20 Nov 2026",
                 start_date="to be agreed",
-                status="Completed",
+                completion_date=None,
             )
         ],
         ("008", _quotation("New", "P", [(1, "new", 1.0, "m2")])),
@@ -931,14 +966,41 @@ def test_an_existing_row_keeps_its_manual_fields_as_they_were():
 
     assert sheet.cell(row=2, column=7).value == "15-20 Nov 2026"
     assert sheet.cell(row=2, column=8).value == "to be agreed"
-    assert sheet.cell(row=2, column=9).value == "Completed"
+    assert sheet.cell(row=2, column=9).value is None
+    # Scheduled and started, nothing completed: the row says Ongoing whatever
+    # the cell it came from used to say.
+    assert sheet.cell(row=2, column=10).value == "Ongoing"
 
 
-def test_a_blank_manual_field_on_an_existing_row_stays_blank():
+def test_a_status_that_disagrees_with_the_dates_is_rewritten_on_the_way_out():
+    """The file is not the source of the Status; its dates are.
+
+    A workbook may still hold a Status somebody chose before this rule existed.
+    Writing it through would reproduce the mistake in every new export.
+    """
+    generator = OpenpyxlWorkbookGenerator()
+    request = _combined(
+        [
+            _existing(
+                installation_schedule="October 2026",
+                start_date="01/10/2026",
+                completion_date=None,
+                status="Completed",
+            )
+        ],
+        ("008", _quotation("New", "P", [(1, "new", 1.0, "m2")])),
+    )
+
+    sheet = _summary(generator.generate_consolidated(request))
+
+    assert sheet.cell(row=2, column=10).value == "Ongoing"
+
+
+def test_a_blank_operational_field_on_an_existing_row_stays_blank():
     """An empty cell round-trips as an empty cell, not as an invented value."""
     generator = OpenpyxlWorkbookGenerator()
     request = _combined(
-        [_existing(installation_schedule="", start_date=None, status="")],
+        [_existing(installation_schedule="", start_date=None, completion_date=None)],
         ("008", _quotation("New", "P", [(1, "new", 1.0, "m2")])),
     )
 
@@ -946,13 +1008,18 @@ def test_a_blank_manual_field_on_an_existing_row_stays_blank():
 
     for col in (7, 8, 9):
         assert sheet.cell(row=2, column=col).value in (None, "")
+    # Nothing set anywhere, so the row reports the one status that means that.
+    assert sheet.cell(row=2, column=10).value == "On Hold"
 
 
-def test_new_quotation_rows_still_leave_their_manual_fields_blank():
+def test_new_quotation_rows_start_with_no_dates_and_the_status_that_means_it():
     """The rule from AGENTS.md section 6 is unchanged by any of this.
 
     A quotation is never a source for Installation Schedule, Start Date or
-    Status, so those cells stay empty for the user to fill in by hand.
+    Completion Date -- they are not in the PDF and are not guessed from it --
+    so those cells stay empty. The Status that follows from three empty fields
+    is written for her rather than left blank, because there is no dropdown left
+    to choose one from.
     """
     generator = OpenpyxlWorkbookGenerator()
     request = _combined(
@@ -964,6 +1031,7 @@ def test_new_quotation_rows_still_leave_their_manual_fields_blank():
 
     for col in (7, 8, 9):
         assert sheet.cell(row=3, column=col).value is None
+    assert sheet.cell(row=3, column=10).value == "On Hold"
 
 
 def test_an_existing_row_with_a_long_description_gets_a_tall_row():
@@ -1056,24 +1124,24 @@ def test_workbook_level_formatting_covers_existing_and_new_rows_together():
 
     assert sheet.max_row == 8
     # The filter covers the header and every populated row, and no more.
-    assert sheet.auto_filter.ref == "A1:I8"
+    assert sheet.auto_filter.ref == "A1:J8"
     assert sheet.freeze_panes == "A2"
 
     # The buffer below the data is still there, and creates no rows of its own.
     buffered = sheet.max_row + OpenpyxlWorkbookGenerator.BUFFER_ROWS
 
+    # No dropdown anywhere: Status is derived, so there is nothing to choose.
     status_rules = [dv for dv in sheet.data_validations.dataValidation if dv.type == "list"]
-    assert len(status_rules) == 1
-    assert str(status_rules[0].sqref) == f"I2:I{buffered}"
+    assert status_rules == []
 
     date_rules = [dv for dv in sheet.data_validations.dataValidation if dv.type == "date"]
     assert len(date_rules) == 1
-    assert str(date_rules[0].sqref) == f"G2:H{buffered}"
+    assert str(date_rules[0].sqref) == f"G2:I{buffered}"
 
     # One rule per status, each covering the whole combined data range.
     rules = _status_rules(sheet)
     assert len(rules) == len(OpenpyxlWorkbookGenerator.STATUS_VALUES)
-    assert {sqref for sqref, _ in rules} == {f"A2:I{buffered}"}
+    assert {sqref for sqref, _ in rules} == {f"A2:J{buffered}"}
     # Those ranges must not have created cells: the data range stays exact.
     assert sheet.max_row == 8
 
@@ -1122,3 +1190,170 @@ def test_the_generator_never_works_out_a_sequence_number():
     sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
 
     assert _sequences(sheet) == ["100", "009", "007", "1000"]
+
+
+# ---------------------------------------------------------------------------
+# Grouping borders.
+#
+# A monitoring sheet is read in groups: several line items belong to one project
+# for one client, and the eye needs to see where one group stops and the next
+# begins without reading the Client and Project cells of every row. A thin line
+# keeps rows of the same group together; a thick line marks the boundary.
+#
+# The boundary is Client + Project, never Sequence Number: two quotations can
+# share a project, and one project can be split across sequences, so the
+# sequence says nothing about which rows belong together.
+# ---------------------------------------------------------------------------
+
+
+def _top_border_style(sheet, row: int, column: int = 1) -> str | None:
+    """The top-border style of one cell, or None when it has no top border."""
+    return sheet.cell(row=row, column=column).border.top.style
+
+
+def _data_row_borders(sheet) -> list[str | None]:
+    """The top-border style of each data row, header excluded."""
+    return [_top_border_style(sheet, row) for row in range(2, sheet.max_row + 1)]
+
+
+def _grouped(*groups: tuple[str, str, int]) -> list[ImportedMonitorRow]:
+    """Existing rows for several client/project groups, in the order given.
+
+    ``groups`` is a sequence of ``(client, project, rows)``. Each group gets its
+    own sequence numbers, so a test about borders is not also a test about
+    numbering.
+    """
+    rows: list[ImportedMonitorRow] = []
+    for client, project, count in groups:
+        for _ in range(count):
+            rows.append(
+                _existing(
+                    sequence_number=f"{len(rows) + 1:03d}",
+                    client_name=client,
+                    project_name=project,
+                )
+            )
+    return rows
+
+
+def test_rows_of_one_client_and_project_are_kept_apart_by_thin_lines():
+    """Rows in the same group are separated, but the group is not broken up."""
+    request = _combined(_grouped(("CLIENT A", "PROJECT X", 3)))
+    sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
+
+    # No line above the first row: there is nothing above it to separate from.
+    assert _data_row_borders(sheet) == [None, "thin", "thin"]
+
+
+def test_a_new_client_starts_a_new_group_with_a_thick_line():
+    """The boundary between two clients is the strongest one on the sheet."""
+    request = _combined(_grouped(("CLIENT A", "PROJECT X", 2), ("CLIENT B", "PROJECT Y", 2)))
+    sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
+
+    assert _data_row_borders(sheet) == [None, "thin", "thick", "thin"]
+
+
+def test_a_new_project_under_the_same_client_is_equally_a_boundary():
+    """The rule is client AND project, so the client being unchanged is not enough."""
+    request = _combined(_grouped(("CLIENT A", "PROJECT X", 2), ("CLIENT A", "PROJECT Y", 2)))
+    sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
+
+    assert _data_row_borders(sheet) == [None, "thin", "thick", "thin"]
+
+
+def test_two_changes_at_once_are_still_one_thick_line():
+    """A boundary is a boundary whether one of the two changed or both did."""
+    request = _combined(_grouped(("CLIENT A", "PROJECT X", 2), ("CLIENT B", "PROJECT X", 2)))
+    sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
+
+    assert _data_row_borders(sheet) == [None, "thin", "thick", "thin"]
+
+
+def test_several_groups_in_a_row_each_start_with_a_thick_line():
+    """The rule holds all the way down, not just for the first pair."""
+    request = _combined(
+        _grouped(
+            ("CLIENT A", "PROJECT X", 2),
+            ("CLIENT B", "PROJECT Y", 2),
+            ("CLIENT C", "PROJECT Z", 2),
+        )
+    )
+    sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
+
+    assert _data_row_borders(sheet) == [
+        None,  # A/X
+        "thin",  # A/X again
+        "thick",  # B/Y starts
+        "thin",  # B/Y again
+        "thick",  # C/Z starts
+        "thin",  # C/Z again
+    ]
+
+
+def test_the_grouping_is_by_value_not_by_where_the_rows_come_from():
+    """Two blocks naming the same client and project are one group.
+
+    The comparison is on the names, so nothing else -- not the order they were
+    written in, not which of them came from a quotation -- can split them.
+    """
+    rows = [
+        _existing(sequence_number="001", client_name="CLIENT A", project_name="PROJECT X"),
+        _existing(sequence_number="002", client_name="CLIENT B", project_name="PROJECT Y"),
+        _existing(sequence_number="003", client_name="CLIENT A", project_name="PROJECT X"),
+    ]
+    request = _combined(rows)
+    sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
+
+    assert _data_row_borders(sheet) == [None, "thick", "thick"]
+
+
+def test_the_separator_reaches_across_the_whole_data_row():
+    """A line that stops in the middle of the row is not a separator."""
+    request = _combined(_grouped(("CLIENT A", "PROJECT X", 1), ("CLIENT B", "PROJECT Y", 1)))
+    sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
+
+    # The second data row is the first row of a new group.
+    assert [_top_border_style(sheet, 3, column) for column in range(1, 11)] == ["thick"] * 10
+
+
+def test_no_thick_line_appears_between_rows_of_the_same_group():
+    """A thick line inside a group would say the group ended when it did not."""
+    request = _combined(_grouped(("CLIENT A", "PROJECT X", 4)))
+    sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
+
+    for column in range(1, 11):
+        for row in (3, 4, 5):
+            assert _top_border_style(sheet, row, column) != "thick"
+
+
+def test_the_comparison_ignores_case_and_surrounding_spaces():
+    """'ALPAGO' and '  alpago  ' are the same client, so there is no boundary."""
+    rows = [
+        _existing(sequence_number="001", client_name="ALPAGO", project_name="MBRC 466"),
+        _existing(sequence_number="002", client_name="  alpago ", project_name="mbrc 466"),
+    ]
+    request = _combined(rows)
+    sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
+
+    assert _data_row_borders(sheet) == [None, "thin"]
+
+
+def test_a_one_row_group_gets_no_border_at_all():
+    """There is nothing inside it to separate, and nothing after it either."""
+    request = _combined(_grouped(("CLIENT A", "PROJECT X", 1)))
+    sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
+
+    assert _data_row_borders(sheet) == [None]
+
+
+def test_the_rows_the_filter_adds_below_the_data_are_left_alone():
+    """Conditional formatting reaches them; borders do not create them.
+
+    A border on a row that has no data would look like an empty group, and the
+    buffer rows exist only so the colours follow rows added by hand later.
+    """
+    request = _combined(_grouped(("CLIENT A", "PROJECT X", 2), ("CLIENT B", "PROJECT Y", 1)))
+    sheet = _summary(OpenpyxlWorkbookGenerator().generate_consolidated(request))
+
+    assert sheet.max_row == 4
+    assert _top_border_style(sheet, sheet.max_row + 1) is None

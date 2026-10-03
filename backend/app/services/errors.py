@@ -63,8 +63,4 @@ class InvalidSequenceNumberError(MonitorImportError):
     """A row's Sequence Number is not a number the application can use."""
 
 
-class InvalidStatusValueError(MonitorImportError):
-    """A row's Status is not one of the values the dropdown offers."""
-
-
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024

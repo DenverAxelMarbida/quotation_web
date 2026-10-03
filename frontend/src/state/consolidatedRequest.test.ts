@@ -54,7 +54,8 @@ function monitorRow(overrides: Partial<ImportedMonitorRow> = {}): ImportedMonito
     unit_of_measurement: 'm2',
     installation_schedule: '',
     start_date: null,
-    status: 'Ongoing',
+    completion_date: null,
+    status: 'On Hold',
     ...overrides,
   }
 }
@@ -103,6 +104,7 @@ describe('with a monitoring workbook open', () => {
       monitorRow({
         installation_schedule: '15-20 Nov 2026',
         start_date: '2026-11-15',
+        completion_date: '2026-11-20',
         status: 'Completed',
       }),
     ]
@@ -111,6 +113,7 @@ describe('with a monitoring workbook open', () => {
 
     expect(request.existing_rows[0].installation_schedule).toBe('15-20 Nov 2026')
     expect(request.existing_rows[0].start_date).toBe('2026-11-15')
+    expect(request.existing_rows[0].completion_date).toBe('2026-11-20')
     expect(request.existing_rows[0].status).toBe('Completed')
   })
 })
@@ -309,7 +312,7 @@ describe('sequence numbers', () => {
  * never produced. Nothing catches that at build time, because both sides are
  * typed and the two types are not compared to each other.
  *
- * So the names are pinned. The column list is the nine Summary fields the backend
+ * So the names are pinned. The column list is the ten Summary fields the backend
  * requires in `backend/app/models/monitor.py`, restated here as the expectation
  * rather than derived from a shared file, which is deliberate: if the two lists
  * ever drift, this test is supposed to fail rather than agree with the mistake.
@@ -317,6 +320,7 @@ describe('sequence numbers', () => {
 describe('the request the backend receives', () => {
   const BACKEND_ROW_FIELDS = [
     'client_name',
+    'completion_date',
     'installation_schedule',
     'product_description',
     'project_name',
@@ -333,10 +337,10 @@ describe('the request the backend receives', () => {
     expect(Object.keys(request).sort()).toEqual(['existing_rows', 'quotations'])
   })
 
-  it('sends exactly the nine fields an imported row is made of', () => {
+  it('sends exactly the ten fields an imported row is made of', () => {
     const request = buildConsolidatedRequest([], [monitorRow()])
 
-    // The model is `extra="forbid"`, so a tenth or a misspelled name fails the
+    // The model is `extra="forbid"`, so an eleventh or a misspelled name fails the
     // whole request rather than dropping one field.
     expect(Object.keys(request.existing_rows![0]).sort()).toEqual(BACKEND_ROW_FIELDS)
   })

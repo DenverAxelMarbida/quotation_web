@@ -1578,7 +1578,8 @@ describe('numbering continues from an imported monitor', () => {
       unit_of_measurement: 'm2',
       installation_schedule: '',
       start_date: null,
-      status: 'Ongoing',
+      completion_date: null,
+      status: 'On Hold',
       ...overrides,
     }
   }
@@ -1747,7 +1748,8 @@ describe('adding a quotation to an existing monitoring workbook', () => {
       unit_of_measurement: 'm2',
       installation_schedule: '',
       start_date: null,
-      status: 'Ongoing',
+      completion_date: null,
+      status: 'On Hold',
       ...overrides,
     }
   }
@@ -1760,6 +1762,7 @@ describe('adding a quotation to an existing monitoring workbook', () => {
         product_description: 'Engineered Oak Flooring 15/4 x 120 x 600mm',
         installation_schedule: '01-05 Sep 2026',
         start_date: '2026-09-01',
+        completion_date: '2026-09-05',
         status: 'Completed',
       }),
       monitorRow({

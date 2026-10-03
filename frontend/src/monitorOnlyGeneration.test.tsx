@@ -75,7 +75,8 @@ function monitorRow(overrides: Partial<ImportedMonitorRow> = {}): ImportedMonito
     unit_of_measurement: 'm2',
     installation_schedule: '',
     start_date: null,
-    status: 'Ongoing',
+    completion_date: null,
+    status: 'On Hold',
     ...overrides,
   }
 }
@@ -213,16 +214,18 @@ describe('regenerating the monitoring workbook', () => {
     expect(sentExistingRows().map((row) => row.sequence_number)).toEqual(['007', '001'])
   })
 
-  it('keeps the three fields only she controls', async () => {
-    // Schedule, start date and status are hers to set in Excel (AGENTS.md
-    // section 6). A regeneration that reset them would erase her own work.
+  it('keeps the fields only she controls', async () => {
+    // Schedule, start date and completion date are hers to set in Excel
+    // (AGENTS.md section 6), and Status follows from them. A regeneration that
+    // reset them would erase her own work.
     await openMonitor()
     fireEvent.click(generateButton())
 
     const row = sentExistingRows()[0]
     expect(row.installation_schedule).toBe('')
     expect(row.start_date).toBeNull()
-    expect(row.status).toBe('Ongoing')
+    expect(row.completion_date).toBeNull()
+    expect(row.status).toBe('On Hold')
   })
 
   it('leaves the monitor out of the session quotation list', async () => {
